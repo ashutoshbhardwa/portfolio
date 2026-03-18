@@ -94,6 +94,7 @@ export default function DataTree() {
     let time = 0;
     let dataLoaded = false;
     let rafId = 0;
+    let densityScale = 1.0; // user-controlled font size multiplier
 
     // Particle buffers (set after data load)
     let pb: ParticleBuffers | null = null;
@@ -457,6 +458,7 @@ export default function DataTree() {
 
       // Track which particles already have a connection (max 1 per particle)
       const connected = new Set<number>();
+      const connectionPartners = new Map<number, number>();
       let lineCount = 0;
       const minD2 = scaledLineMin * scaledLineMin;
       const maxD2 = scaledLineMax * scaledLineMax;
@@ -468,10 +470,17 @@ export default function DataTree() {
         const ax = pA.screenX + pA.dispX;
         const ay = pA.screenY + pA.dispY;
 
-        // Find ONE partner in the sweet spot (30-85px away)
+        // Find ONE partner in the sweet spot (45-90px away)
         for (let b = a + 1; b < near.length; b++) {
           const idxB = near[b];
           if (connected.has(idxB)) continue;
+
+          // Reject if would form triangle with existing connections
+          const partnerOfA = connectionPartners.get(idxA);
+          const partnerOfB = connectionPartners.get(idxB);
+          if (partnerOfA !== undefined && connectionPartners.get(partnerOfA) === idxB) continue;
+          if (partnerOfB !== undefined && connectionPartners.get(partnerOfB) === idxA) continue;
+
           const pB = cpu[idxB];
           const bx = pB.screenX + pB.dispX;
           const by = pB.screenY + pB.dispY;
@@ -489,6 +498,8 @@ export default function DataTree() {
             lineCount++;
             connected.add(idxA);
             connected.add(idxB);
+            connectionPartners.set(idxA, idxB);
+            connectionPartners.set(idxB, idxA);
             break; // move to next particle
           }
         }
@@ -512,6 +523,34 @@ export default function DataTree() {
       if (bottomEl) {
         bottomEl.style.opacity = String(clamp((progress - 0.82) / 0.1, 0, 1));
       }
+    }
+
+    // ── Density keyboard control ──────────────────────────────────────────────
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      if (e.key === '=' || e.key === '+') {
+        e.preventDefault();
+        densityScale = Math.min(densityScale + 0.15, 2.5);
+        particleMat.uniforms.uDensityScale.value = densityScale;
+        updateDensityHint();
+      }
+      if (e.key === '-') {
+        e.preventDefault();
+        densityScale = Math.max(densityScale - 0.15, 0.3);
+        particleMat.uniforms.uDensityScale.value = densityScale;
+        updateDensityHint();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+
+    // Show hint label briefly when density changes
+    function updateDensityHint() {
+      const el = document.getElementById('density-hint');
+      if (!el) return;
+      el.style.opacity = '1';
+      clearTimeout((el as any)._t);
+      (el as any)._t = setTimeout(() => { el.style.opacity = '0'; }, 1800);
     }
 
     // ── RAF loop ─────────────────────────────────────────────────────────────
@@ -562,6 +601,7 @@ export default function DataTree() {
       container.removeEventListener("pointermove", onPointerMove);
       container.removeEventListener("pointerup", onPointerUp);
       container.removeEventListener("pointerleave", onPointerLeave);
+      window.removeEventListener('keydown', onKeyDown);
 
       // Dispose Three.js resources
       if (points) {
@@ -701,6 +741,46 @@ export default function DataTree() {
           <br />
           BHARDWAJ
         </div>
+      </div>
+
+      {/* Density change hint (shown briefly on ⌘+/⌘−) */}
+      <div
+        id="density-hint"
+        style={{
+          position: 'absolute',
+          bottom: 32,
+          right: 28,
+          zIndex: 2,
+          pointerEvents: 'none',
+          opacity: 0,
+          transition: 'opacity 0.4s ease',
+          fontFamily: '"Courier New", monospace',
+          fontSize: 9,
+          letterSpacing: '0.18em',
+          color: 'rgba(10,10,10,0.35)',
+          textTransform: 'uppercase',
+        }}
+      >
+        ⌘ + / ⌘ − &nbsp; density
+      </div>
+
+      {/* Permanent density control hint */}
+      <div
+        style={{
+          position: 'absolute',
+          top: 20,
+          right: 24,
+          zIndex: 2,
+          pointerEvents: 'none',
+          fontFamily: '"Courier New", monospace',
+          fontSize: 8,
+          letterSpacing: '0.18em',
+          color: 'rgba(10,10,10,0.13)',
+          textTransform: 'uppercase',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        ⌘ + / ⌘ − &nbsp; density
       </div>
     </div>
   );

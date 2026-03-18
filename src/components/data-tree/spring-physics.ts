@@ -33,7 +33,7 @@ const TURBULENCE_STRENGTH = 3.0;  // reduced from 6 — preserve tree shape
 const REPEL_STRENGTH = 1.2;       // reduced from 2 — gentle push
 const SLOW_DAMPING = 0.90;
 const REST_DAMPING = DAMPING;
-const REDUCED_MAX_DISP = 40;      // reduced from 75 — don't break the silhouette
+const REDUCED_MAX_DISP = MAX_DISP; // use full displacement range for explosive scatter
 
 /**
  * Turbulence-based cursor interaction with depth-aware influence.
@@ -94,10 +94,15 @@ export function updateTurbulencePhysics(
 
           const proximity = 1 - dist / influenceR;
 
-          // 1. Gentle repulsive force
+          // Per-particle angle noise — each particle scatters differently
+          const angleNoise = (Math.sin(i * 127.1 + time * 0.5) * 0.5 + Math.cos(i * 311.7 + time * 0.3) * 0.5) * 0.6;
+          const noisedDx = dx * Math.cos(angleNoise) - dy * Math.sin(angleNoise);
+          const noisedDy = dx * Math.sin(angleNoise) + dy * Math.cos(angleNoise);
+
+          // 1. Repulsive force using noised direction
           const repelF = proximity * proximity * REPEL_STRENGTH * depthMul;
-          p.velX += (dx / dist) * repelF;
-          p.velY += (dy / dist) * repelF;
+          p.velX += (noisedDx / dist) * repelF;
+          p.velY += (noisedDy / dist) * repelF;
 
           // 2. Curl noise turbulence — swirly, chaotic
           const [cx, cy] = curlNoise(sx * 0.015, sy * 0.015, time * 2.5);
@@ -110,6 +115,11 @@ export function updateTurbulencePhysics(
           const jy = (Math.random() - 0.5) * proximity * 2.0 * depthMul;
           p.velX += jx;
           p.velY += jy;
+
+          // Directional chaos — breaks circular symmetry
+          const chaosBias = 1.8;
+          p.velX += (dx < 0 ? -1 : 1) * Math.abs(p.velX) * chaosBias * 0.15;
+          p.velY += (dy < 0 ? -1 : 1) * Math.abs(p.velY) * chaosBias * 0.15;
 
           p.velX *= SLOW_DAMPING;
           p.velY *= SLOW_DAMPING;

@@ -221,6 +221,7 @@ uniform vec2 uResolution;
 uniform float uSceneScale;
 uniform float uDPR;
 uniform float uUniformScale;
+uniform float uDensityScale;
 
 varying float vDigitIndex;
 varying float vAlpha;
@@ -303,8 +304,8 @@ void main() {
   ndc.y = -ndc.y;
   gl_Position = vec4(ndc, 0.0, 1.0);
 
-  // Point size: base font size × perspective × DPR × 2.2 for Retina readability
-  float ptSize = aFontSize * d * uDPR * 1.3;
+  // Point size: base font size × perspective × DPR × density
+  float ptSize = aFontSize * d * uDPR * 1.3 * uDensityScale;
   gl_PointSize = ptSize;
 
   // Varyings
@@ -387,6 +388,7 @@ export function createParticleMaterial(
       uSceneScale: { value: 1 },
       uDPR: { value: 1 },
       uUniformScale: { value: 1 },
+      uDensityScale: { value: 1.0 },
       uAtlas: { value: atlas },
     },
     transparent: true,
@@ -420,7 +422,7 @@ uniform float uTime;
 void main() {
   // Electric pulse — alpha oscillates
   float pulse = 0.7 + 0.3 * sin(uTime * 8.0 + gl_FragCoord.x * 0.05);
-  gl_FragColor = vec4(0.04, 0.04, 0.04, uLineAlpha * pulse);
+  gl_FragColor = vec4(0.06, 0.06, 0.06, uLineAlpha * pulse);
 }
 `;
 
@@ -430,7 +432,7 @@ export function createLineMaterial(): THREE.ShaderMaterial {
     fragmentShader: LINE_FRAGMENT_SHADER,
     uniforms: {
       uResolution: { value: new THREE.Vector2(1, 1) },
-      uLineAlpha: { value: 0.35 },
+      uLineAlpha: { value: 0.55 },
       uTime: { value: 0 },
     },
     transparent: true,
