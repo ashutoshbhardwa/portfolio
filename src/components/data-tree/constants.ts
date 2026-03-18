@@ -35,7 +35,7 @@ export const SCROLL_ROTATE_SPEED = 0.002;
 export const ROT_LERP = 0.022;
 
 // ── Font sizes per darkness zone (px) ────────────────────────────────────────
-export const FONT_SIZES: [number, number, number, number] = [18, 15, 12, 9];
+export const FONT_SIZES: [number, number, number, number] = [14, 12, 10, 8];
 // darkness > 0.75 → 13, > 0.55 → 11, > 0.35 → 9, else → 8
 
 // ── Darkness thresholds ──────────────────────────────────────────────────────

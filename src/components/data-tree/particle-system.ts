@@ -94,8 +94,8 @@ export function buildParticleSystem(
     worldPos[i * 3 + 2] = pt[2];
 
     // Scatter position
-    const sx = (Math.random() - 0.5) * W * 1.5;
-    const sy = (Math.random() - 0.5) * H * 1.5;
+    const sx = Math.random() * W;
+    const sy = Math.random() * H;
     scatterPos[i * 2] = sx;
     scatterPos[i * 2 + 1] = sy;
 
@@ -190,8 +190,8 @@ export function redistributeScatter(
 ) {
   const n = scatterBuf.length / 2;
   for (let i = 0; i < n; i++) {
-    scatterBuf[i * 2] = (Math.random() - 0.5) * W * 1.5;
-    scatterBuf[i * 2 + 1] = (Math.random() - 0.5) * H * 1.5;
+    scatterBuf[i * 2] = Math.random() * W;
+    scatterBuf[i * 2 + 1] = Math.random() * H;
   }
   scatterAttr.needsUpdate = true;
 }
@@ -222,6 +222,7 @@ uniform float uSceneScale;
 uniform float uDPR;
 uniform float uUniformScale;
 uniform float uDensityScale;
+uniform float uDisintegration;
 
 varying float vDigitIndex;
 varying float vAlpha;
@@ -299,13 +300,24 @@ void main() {
   // Spring displacement
   pos += aDisplacement;
 
+  // Disintegration: animate back to scatter positions
+  float disintEase = 0.0;
+  if (uDisintegration > 0.0) {
+    disintEase = uDisintegration * uDisintegration * (3.0 - 2.0 * uDisintegration);
+    vec2 scatterTarget = aScatterPos + aBrownian;
+    pos = mix(pos, scatterTarget, disintEase);
+  }
+
   // Screen-space → clip-space
   vec2 ndc = (pos / uResolution) * 2.0 - 1.0;
   ndc.y = -ndc.y;
   gl_Position = vec4(ndc, 0.0, 1.0);
 
-  // Point size: base font size × perspective × DPR × density
-  float ptSize = aFontSize * d * uDPR * 1.3 * uDensityScale;
+  // Scatter state: all particles small (8px max) regardless of zone
+  // Formed state: normal depth-scaled size
+  float scatterPtSize = 9.0;
+  float formedPtSize = aFontSize * d * uDensityScale;
+  float ptSize = mix(scatterPtSize, formedPtSize, ep * (1.0 - uDisintegration)) * uDPR;
   gl_PointSize = ptSize;
 
   // Varyings
@@ -333,7 +345,14 @@ void main() {
     terrainFade *= edgeFade;
   }
 
-  vAlpha = depthAlpha * ep * terrainFade;
+  // Scatter: uniform low opacity so field looks like distant stars
+  // No darkness variation in scatter — all equally faint
+  float scatterOpacity = 0.32;
+  vAlpha = mix(scatterOpacity, depthAlpha * terrainFade, ep);
+  // Disintegration alpha: fade to 22% as particles return to scatter
+  if (uDisintegration > 0.0) {
+    vAlpha *= mix(1.0, 0.22, disintEase);
+  }
   vDarkness = aDarkness;
 }
 `;
@@ -389,6 +408,7 @@ export function createParticleMaterial(
       uDPR: { value: 1 },
       uUniformScale: { value: 1 },
       uDensityScale: { value: 1.0 },
+      uDisintegration: { value: 0.0 },
       uAtlas: { value: atlas },
     },
     transparent: true,

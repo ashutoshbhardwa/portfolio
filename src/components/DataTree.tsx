@@ -8,7 +8,6 @@ import {
   SCENE_SCALE_FACTOR,
   PROGRESS_LERP,
   SCROLL_SENSITIVITY,
-  DRAG_SENSITIVITY,
   AUTO_ROTATE_SPEED,
   DRAG_ROTATE_SPEED,
   DRAG_TILT_SPEED,
@@ -20,14 +19,13 @@ import {
   MAX_LINE_ALPHA,
   MAX_LINES,
   GRID_CELL,
-  BG_COLOR,
   DIGIT_TRUNK,
   DIGIT_BRANCH,
   DIGIT_MID,
 } from "./data-tree/constants";
 import type { RawPoint, ParticleCPU } from "./data-tree/types";
 import { generateSDFAtlas } from "./data-tree/sdf-atlas";
-import { RainLayer } from "./data-tree/rain-layer";
+
 import { updateTurbulencePhysics } from "./data-tree/spring-physics";
 import {
   augmentPoints,
@@ -61,15 +59,35 @@ function assignDigit(darkness: number): number {
 
 export default function DataTree() {
   const containerRef = useRef<HTMLDivElement>(null);
-  const rainCanvasRef = useRef<HTMLCanvasElement>(null);
+
   const treeCanvasRef = useRef<HTMLCanvasElement>(null);
   const hintRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const nameRef = useRef<HTMLDivElement>(null);
   const dotRef = useRef<HTMLSpanElement>(null);
+  const watermarkRef = useRef<HTMLDivElement>(null);
+  const watermarkTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const zonesRef = useRef<HTMLDivElement>(null);
+  const starScreenRef = useRef<HTMLDivElement>(null);
+
+  function showWatermark(word: string) {
+    const el = watermarkRef.current;
+    if (!el) return;
+    el.textContent = word;
+    el.style.opacity = '1';
+    if (watermarkTimeoutRef.current) clearTimeout(watermarkTimeoutRef.current);
+  }
+
+  function hideWatermark() {
+    const el = watermarkRef.current;
+    if (!el) return;
+    watermarkTimeoutRef.current = setTimeout(() => {
+      el.style.opacity = '0';
+    }, 200);
+  }
 
   useEffect(() => {
     const container = containerRef.current!;
-    const rainCanvas = rainCanvasRef.current!;
     const treeCanvas = treeCanvasRef.current!;
     const hintEl = hintRef.current!;
     const bottomEl = bottomRef.current!;
@@ -95,7 +113,8 @@ export default function DataTree() {
     let dataLoaded = false;
     let rafId = 0;
     let densityScale = 1.0; // user-controlled font size multiplier
-
+    let treeFormedAt: number | null = null;
+    let scrollUnlocked = false;
     // Particle buffers (set after data load)
     let pb: ParticleBuffers | null = null;
 
@@ -133,15 +152,10 @@ export default function DataTree() {
     const lineSegments = new THREE.LineSegments(lineGeometry, lineMat);
     scene.add(lineSegments);
 
-    // Rain
-    const rain = new RainLayer();
-    let rainCtx: CanvasRenderingContext2D | null = null;
-
     // ── Resize ───────────────────────────────────────────────────────────────
     function resize() {
-      const rect = container.getBoundingClientRect();
-      W = rect.width;
-      H = rect.height;
+      W = window.innerWidth;
+      H = window.innerHeight;
       DPR = Math.min(window.devicePixelRatio || 1, 2);
       // Physical screen DPR — locked to hardware, never changes with browser zoom
       const physicalDPR = window.devicePixelRatio >= 1.5 ? 2 : 1;
@@ -161,16 +175,6 @@ export default function DataTree() {
       particleMat.uniforms.uResolution.value.set(W, H);
       particleMat.uniforms.uDPR.value = physicalDPR;
       lineMat.uniforms.uResolution.value.set(W, H);
-
-      // Rain canvas
-      rainCanvas.width = Math.round(W * DPR);
-      rainCanvas.height = Math.round(H * DPR);
-      rainCanvas.style.width = W + "px";
-      rainCanvas.style.height = H + "px";
-      rainCtx = rainCanvas.getContext("2d")!;
-      rainCtx.setTransform(1, 0, 0, 1, 0, 0);
-      rainCtx.scale(DPR, DPR);
-      rain.init(W, H);
 
       // Redistribute scatter positions
       if (pb) {
@@ -213,13 +217,16 @@ export default function DataTree() {
       points = new THREE.Points(pb.geometry, particleMat);
       scene.add(points);
       dataLoaded = true;
-
-      if (W > 0) {
-        const scatterAttr = pb.geometry.getAttribute(
-          "aScatterPos"
-        ) as THREE.BufferAttribute;
-        redistributeScatter(pb.scatterBuf, scatterAttr, W, H);
-      }
+      // Force resize to current viewport before redistributing scatter
+      W = window.innerWidth;
+      H = window.innerHeight;
+      renderer.setSize(W, H);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      particleMat.uniforms.uResolution.value.set(W, H);
+      particleMat.uniforms.uSceneScale.value = Math.min(W, H) * SCENE_SCALE_FACTOR;
+      lineMat.uniforms.uResolution.value.set(W, H);
+      const scatterAttr = pb.geometry.getAttribute('aScatterPos') as THREE.BufferAttribute;
+      redistributeScatter(pb.scatterBuf, scatterAttr, W, H);
     }
 
     // ── Resize observer ──────────────────────────────────────────────────────
@@ -241,15 +248,34 @@ export default function DataTree() {
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       markInteracted();
-      targetProgress = clamp(
-        targetProgress + Math.abs(e.deltaY) * SCROLL_SENSITIVITY,
-        0,
-        1
-      );
-      // Scroll-rotate only after fully formed, and with much less sensitivity
-      if (progress > 0.95) {
-        targetRotY += e.deltaY * 0.0004;
+
+      // SCROLL UP — always works regardless of state
+      if (e.deltaY < 0) {
+        targetProgress = clamp(
+          targetProgress + e.deltaY * SCROLL_SENSITIVITY,
+          0,
+          1.7
+        );
+        return;
       }
+
+      // SCROLL DOWN phase 1: building tree
+      // Hard cap at 0.88 — progress lerps toward 0.88 but check at 0.86
+      if (progress < 0.86) {
+        targetProgress = clamp(
+          targetProgress + e.deltaY * SCROLL_SENSITIVITY,
+          0,
+          0.88
+        );
+        return;
+      }
+
+      // SCROLL DOWN phase 2+3: tree formed — scroll disintegrates
+      targetProgress = clamp(
+        targetProgress + e.deltaY * SCROLL_SENSITIVITY * 0.4,
+        0,
+        1.7
+      );
     };
 
     const onPointerDown = (e: PointerEvent) => {
@@ -260,21 +286,24 @@ export default function DataTree() {
     };
 
     const onPointerMove = (e: PointerEvent) => {
-      const rect = container.getBoundingClientRect();
-      mouseX = e.clientX - rect.left;
-      mouseY = e.clientY - rect.top;
+      mouseX = e.clientX;
+      mouseY = e.clientY;
+
+      // Gentle mouse-follow tilt — tree leans toward cursor
+      if (progress > 0.85) {
+        const normX = (mouseX / W - 0.5) * 2; // -1 to 1
+        const normY = (mouseY / H - 0.5) * 2; // -1 to 1
+        targetRotY += normX * 0.0003;
+        targetRotX = clamp(targetRotX + normY * -0.0002, -MAX_TILT_X, MAX_TILT_X);
+      }
+
       if (!isDragging) return;
       markInteracted();
       const dx = e.clientX - lastDragX;
       const dy = e.clientY - lastDragY;
       lastDragX = e.clientX;
       lastDragY = e.clientY;
-      targetProgress = clamp(
-        targetProgress + Math.sqrt(dx * dx + dy * dy) * DRAG_SENSITIVITY,
-        0,
-        1
-      );
-      if (progress > 0.75) {
+      if (isDragging && progress > 0.85 && progress < 1.4) {
         targetRotY += dx * DRAG_ROTATE_SPEED;
         targetRotX = clamp(targetRotX - dy * DRAG_TILT_SPEED, -MAX_TILT_X, MAX_TILT_X);
       }
@@ -515,13 +544,36 @@ export default function DataTree() {
     // ── Overlay updates ──────────────────────────────────────────────────────
 
     function updateOverlays() {
-      if (!interacted && hintEl) {
-        hintEl.style.opacity = String(0.38 + 0.37 * Math.sin(time * 1.8));
+      if (hintEl) {
+        if (progress >= 1.0) {
+          hintEl.style.opacity = '0';
+        } else if (progress >= 0.85 && scrollUnlocked) {
+          // Unlocked — show scroll to explore with pulsing
+          hintEl.style.opacity = String(0.4 + 0.3 * Math.sin(time * 2.0));
+          const hintText = hintEl.querySelector('span:first-child') as HTMLElement;
+          if (hintText) hintText.textContent = 'scroll to explore';
+        } else if (progress >= 0.85 && !scrollUnlocked) {
+          // Still in lock period — hide the nudge, let user explore
+          hintEl.style.opacity = '0';
+        } else if (!interacted) {
+          // Pre-interaction — show scroll to reveal
+          hintEl.style.opacity = String(0.38 + 0.37 * Math.sin(time * 1.8));
+        }
         if (dotEl)
-          dotEl.style.opacity = String(0.5 + 0.5 * Math.sin(time * 3.2));
+          dotEl.style.transform = `scaleY(${0.5 + 0.5 * Math.sin(time * 3.2)})`;
       }
-      if (bottomEl) {
-        bottomEl.style.opacity = String(clamp((progress - 0.82) / 0.1, 0, 1));
+      if (nameRef.current) {
+        nameRef.current.style.opacity = String(clamp((progress - 0.82) / 0.12, 0, 1));
+      }
+      if (zonesRef.current) {
+        const zonesVisible = progress > 0.85 && progress < 1.0;
+        zonesRef.current.style.opacity = zonesVisible ? '1' : '0';
+        zonesRef.current.style.pointerEvents = zonesVisible ? 'auto' : 'none';
+      }
+      if (starScreenRef.current) {
+        const starOpacity = clamp((progress - 1.4) / 0.3, 0, 1);
+        starScreenRef.current.style.opacity = String(starOpacity);
+        starScreenRef.current.style.pointerEvents = starOpacity > 0.1 ? 'auto' : 'none';
       }
     }
 
@@ -561,6 +613,15 @@ export default function DataTree() {
       // Smooth progress
       progress += (targetProgress - progress) * PROGRESS_LERP;
 
+      // Detect when tree first fully forms
+      if (progress >= 0.85 && treeFormedAt === null) {
+        treeFormedAt = time;
+      }
+      // Unlock scroll-to-disintegrate after 5 seconds
+      if (treeFormedAt !== null && !scrollUnlocked) {
+        scrollUnlocked = (time - treeFormedAt) >= 5.0;
+      }
+
       if (progress > 0.85) targetRotY += AUTO_ROTATE_SPEED;
       rotY += (targetRotY - rotY) * ROT_LERP;
       rotX += (targetRotX - rotX) * ROT_LERP;
@@ -573,6 +634,9 @@ export default function DataTree() {
       particleMat.uniforms.uRotY.value = rotY;
       particleMat.uniforms.uRotX.value = rotX;
       particleMat.uniforms.uTime.value = time;
+      const disint = clamp((progress - 0.86) / 0.8, 0, 1);
+      particleMat.uniforms.uDisintegration.value = disint;
+      if (progress >= 1.65) targetProgress = 1.65;
       lineMat.uniforms.uTime.value = time;
 
       // Smart lines
@@ -580,9 +644,6 @@ export default function DataTree() {
 
       // Render Three.js scene
       renderer.render(scene, camera);
-
-      // Rain (Canvas 2D)
-      if (rainCtx) rain.draw(rainCtx, W, H, progress);
 
       // Overlays
       updateOverlays();
@@ -622,26 +683,22 @@ export default function DataTree() {
     <div
       ref={containerRef}
       style={{
-        position: "relative",
-        width: "100%",
+        position: "fixed",
+        top: 0,
+        left: 0,
+        width: "100vw",
         height: "100vh",
-        background: BG_COLOR,
+        background: '#F9F8F4',
         overflow: "hidden",
         touchAction: "none",
         userSelect: "none",
         cursor: "default",
       }}
     >
-      {/* Rain layer (Canvas 2D) */}
-      <canvas
-        ref={rainCanvasRef}
-        style={{ position: "absolute", inset: 0, zIndex: 0, pointerEvents: "none" }}
-      />
-
       {/* Tree layer (Three.js WebGL) */}
       <canvas
         ref={treeCanvasRef}
-        style={{ position: "absolute", inset: 0, zIndex: 1, pointerEvents: "none" }}
+        style={{ position: "absolute", inset: 0, zIndex: 2, pointerEvents: "none" }}
       />
 
       {/* Top-left signature */}
@@ -650,7 +707,7 @@ export default function DataTree() {
           position: "absolute",
           top: 20,
           left: 20,
-          zIndex: 2,
+          zIndex: 5,
           fontFamily: '"Courier New", monospace',
           fontSize: 8,
           letterSpacing: "0.18em",
@@ -662,56 +719,57 @@ export default function DataTree() {
         AB&nbsp;&nbsp;&nbsp;2025
       </div>
 
-      {/* Centre scroll/drag hint */}
+      {/* Bottom-center scroll nudge */}
       <div
         ref={hintRef}
         style={{
-          position: "absolute",
-          top: "50%",
-          left: "50%",
-          transform: "translate(-50%, -50%)",
-          zIndex: 2,
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          gap: 10,
-          pointerEvents: "none",
+          position: 'absolute',
+          bottom: 28,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          zIndex: 5,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: 6,
+          pointerEvents: 'none',
           opacity: 0.75,
         }}
       >
         <span
-          ref={dotRef}
-          style={{
-            display: "block",
-            width: 6,
-            height: 6,
-            borderRadius: "50%",
-            background: "rgba(10,10,10,0.5)",
-          }}
-        />
-        <span
           style={{
             fontFamily: '"Courier New", monospace',
-            fontSize: 9,
-            letterSpacing: "0.22em",
-            color: "rgba(10,10,10,0.20)",
-            whiteSpace: "nowrap",
+            fontSize: 8,
+            letterSpacing: '0.22em',
+            color: 'rgba(10,10,10,0.22)',
+            whiteSpace: 'nowrap',
+            textTransform: 'uppercase',
           }}
         >
-          SCROLL OR DRAG TO REVEAL
+          scroll to reveal
         </span>
+        <span
+          ref={dotRef}
+          style={{
+            display: 'block',
+            width: 1,
+            height: 14,
+            background: 'rgba(10,10,10,0.18)',
+          }}
+        />
       </div>
 
-      {/* Bottom-left identity */}
+      {/* Top-left identity */}
       <div
-        ref={bottomRef}
+        ref={nameRef}
         style={{
-          position: "absolute",
-          bottom: 32,
+          position: 'absolute',
+          top: 24,
           left: 24,
-          zIndex: 2,
-          pointerEvents: "none",
+          zIndex: 0,
+          pointerEvents: 'none',
           opacity: 0,
+          transition: 'opacity 0.8s ease',
         }}
       >
         <div
@@ -731,7 +789,7 @@ export default function DataTree() {
           style={{
             fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif',
             fontWeight: 900,
-            fontSize: "clamp(20px, 3.8vw, 46px)",
+            fontSize: 'clamp(28px, 5.5vw, 72px)',
             lineHeight: 0.86,
             letterSpacing: "-0.03em",
             color: "#0A0A0A",
@@ -750,7 +808,7 @@ export default function DataTree() {
           position: 'absolute',
           bottom: 32,
           right: 28,
-          zIndex: 2,
+          zIndex: 5,
           pointerEvents: 'none',
           opacity: 0,
           transition: 'opacity 0.4s ease',
@@ -770,7 +828,7 @@ export default function DataTree() {
           position: 'absolute',
           top: 20,
           right: 24,
-          zIndex: 2,
+          zIndex: 5,
           pointerEvents: 'none',
           fontFamily: '"Courier New", monospace',
           fontSize: 8,
@@ -781,6 +839,116 @@ export default function DataTree() {
         }}
       >
         ⌘ + / ⌘ − &nbsp; density
+      </div>
+
+      {/* Watermark overlay for easter egg hover zones */}
+      <div
+        ref={watermarkRef}
+        style={{
+          position: 'absolute',
+          inset: 0,
+          zIndex: 3,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif',
+          fontWeight: 900,
+          fontSize: 'clamp(80px, 16vw, 220px)',
+          letterSpacing: '-0.04em',
+          color: 'rgba(10,10,10,0.22)',
+          pointerEvents: 'none',
+          opacity: 0,
+          transition: 'opacity 0.5s ease',
+          userSelect: 'none',
+          textAlign: 'center',
+          lineHeight: 1,
+        }}
+      />
+
+      {/* Starry night second screen */}
+      <div
+        ref={starScreenRef}
+        style={{
+          position: 'absolute',
+          inset: 0,
+          zIndex: 6,
+          background: 'transparent',
+          opacity: 0,
+          pointerEvents: 'none',
+          transition: 'opacity 0.4s ease',
+          overflow: 'hidden',
+        }}
+      >
+        {[
+          { text: 'Visual Designer', x: '12%',  y: '18%' },
+          { text: '2019 — 2025',     x: '72%',  y: '9%'  },
+          { text: 'CDC',             x: '38%',  y: '32%' },
+          { text: 'Motion',          x: '61%',  y: '55%' },
+          { text: 'Bangalore',       x: '22%',  y: '71%' },
+          { text: 'Stable Money',    x: '78%',  y: '38%' },
+          { text: 'Daily Objects',   x: '48%',  y: '78%' },
+          { text: 'System Design',   x: '8%',   y: '48%' },
+          { text: 'Probo',           x: '85%',  y: '72%' },
+          { text: '3D',              x: '55%',  y: '22%' },
+          { text: 'Brand',           x: '30%',  y: '88%' },
+          { text: 'Strategy',        x: '66%',  y: '88%' },
+        ].map((node, i) => (
+          <div
+            key={i}
+            style={{
+              position: 'absolute',
+              left: node.x,
+              top: node.y,
+              fontFamily: '"Courier New", monospace',
+              fontSize: 9,
+              letterSpacing: '0.18em',
+              textTransform: 'uppercase',
+              color: 'rgba(10,10,10,0.22)',
+              whiteSpace: 'nowrap',
+              animation: `starFade ${3 + (i % 4)}s ease-in-out infinite`,
+              animationDelay: `${i * 0.4}s`,
+            }}
+          >
+            {node.text}
+          </div>
+        ))}
+      </div>
+
+      {/* starFade keyframes */}
+      <style>{`
+        @keyframes starFade {
+          0%, 100% { opacity: 0.15; }
+          50% { opacity: 0.55; }
+        }
+      `}</style>
+
+      {/* Hidden easter egg hover zones — only active once tree is formed */}
+      <div ref={zonesRef} style={{ opacity: 0, pointerEvents: 'none', transition: 'opacity 0.6s ease' }}>
+        {[
+          { top: '8%',  left: '28%', w: '22%', h: '20%', word: 'CDC 3D' },
+          { top: '10%', left: '50%', w: '24%', h: '22%', word: 'STABLE MONEY' },
+          { top: '28%', left: '32%', w: '20%', h: '18%', word: 'SYSTEM DESIGN' },
+          { top: '26%', left: '54%', w: '20%', h: '18%', word: 'DAILY OBJECTS' },
+          { top: '44%', left: '40%', w: '18%', h: '16%', word: 'PROBO' },
+          { top: '48%', left: '30%', w: '16%', h: '14%', word: 'STRATEGIC THINKING' },
+          { top: '55%', left: '50%', w: '18%', h: '14%', word: 'MOTION' },
+        ].map((z, i) => (
+          <div
+            key={i}
+            onMouseEnter={() => showWatermark(z.word)}
+            onMouseLeave={() => hideWatermark()}
+            style={{
+              position: 'absolute',
+              top: z.top,
+              left: z.left,
+              width: z.w,
+              height: z.h,
+              zIndex: 4,
+              cursor: 'default',
+              background: 'transparent',
+            }}
+          />
+        ))}
       </div>
     </div>
   );
