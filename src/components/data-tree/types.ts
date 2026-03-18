@@ -14,12 +14,18 @@ export interface ParticleCPU {
   /** Spring velocity */
   velX: number;
   velY: number;
-  /** Current digit 0–9 */
+  /** Current digit/character index 0–35 */
   digit: number;
   /** Frames until next flicker */
   flickerTimer: number;
   /** Flicker interval (frames) */
   flickerInterval: number;
+  /** Fade opacity 0–1 for smooth character transitions */
+  fadeOpacity: number;
+  /** Fade state machine */
+  fadeState: 'visible' | 'fading-out' | 'fading-in';
+  /** Frame counter for fade animation */
+  fadeTimer: number;
   /** Darkness value (cached for digit reassignment) */
   darkness: number;
   /** Computed screen position (for proximity lines + spring) */

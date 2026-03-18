@@ -49,11 +49,12 @@ function easeInOutCubic(t: number) {
 }
 
 function assignDigit(darkness: number): number {
+  // Pool: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" (36 chars)
   const r = Math.floor(Math.random() * 0x7fffffff) >>> 0;
-  if (darkness > DIGIT_TRUNK) return r % 3;
-  if (darkness > DIGIT_BRANCH) return 3 + (r % 3);
-  if (darkness > DIGIT_MID) return 6 + (r % 2);
-  return 8 + (r % 2);
+  if (darkness > DIGIT_TRUNK) return r % 9;            // A–I (indices 0–8)
+  if (darkness > DIGIT_BRANCH) return 6 + (r % 13);    // G–S (indices 6–18)
+  if (darkness > DIGIT_MID) return 12 + (r % 17);      // M–2 (indices 12–28)
+  return 20 + (r % 16);                                 // U–9 (indices 20–35)
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
@@ -141,15 +142,23 @@ export default function DataTree() {
       W = rect.width;
       H = rect.height;
       DPR = Math.min(window.devicePixelRatio || 1, 2);
+      // Physical screen DPR — locked to hardware, never changes with browser zoom
+      const physicalDPR = window.devicePixelRatio >= 1.5 ? 2 : 1;
 
       // Three.js renderer
       renderer.setSize(W, H);
       renderer.setPixelRatio(DPR);
 
       // Uniforms
-      particleMat.uniforms.uResolution.value.set(W, H);
+      const uniformScale = Math.min(W / 1920, H / 1080);
+
+      // Scene scale stays responsive to actual viewport — do NOT lock this to 1920
       particleMat.uniforms.uSceneScale.value = Math.min(W, H) * SCENE_SCALE_FACTOR;
-      particleMat.uniforms.uDPR.value = DPR;
+
+      // Only use uniformScale for point size and interaction radii
+      particleMat.uniforms.uUniformScale.value = uniformScale;
+      particleMat.uniforms.uResolution.value.set(W, H);
+      particleMat.uniforms.uDPR.value = physicalDPR;
       lineMat.uniforms.uResolution.value.set(W, H);
 
       // Rain canvas
@@ -364,29 +373,58 @@ export default function DataTree() {
         // Digit flicker — rapid glitch when disturbed by cursor
         const isDisturbed = Math.abs(p.velX) > 0.8 || Math.abs(p.velY) > 0.8;
         if (isDisturbed) {
-          // Glitch: flicker every 2-4 frames, any digit
+          // Glitch: flicker every 2-4 frames, any character
           if (Math.random() > 0.4) {
-            p.digit = Math.floor(Math.random() * 10);
+            p.digit = Math.floor(Math.random() * 36);
             pb.digitBuf[i] = p.digit;
+            p.fadeOpacity = 1;
+            p.fadeState = 'visible';
+            p.fadeTimer = 0;
           }
         } else {
-          p.flickerTimer++;
-          if (p.flickerTimer >= p.flickerInterval) {
-            p.flickerTimer = 0;
-            p.flickerInterval = 18 + Math.floor(Math.random() * 72);
-            p.digit = assignDigit(p.darkness);
-            pb.digitBuf[i] = p.digit;
+          // Fade state machine for smooth character transitions
+          if (p.fadeState === 'fading-out') {
+            p.fadeTimer++;
+            p.fadeOpacity = 1 - p.fadeTimer / 8;
+            if (p.fadeTimer >= 8) {
+              // At opacity 0, swap the character
+              p.fadeOpacity = 0;
+              p.digit = assignDigit(p.darkness);
+              pb.digitBuf[i] = p.digit;
+              p.fadeState = 'fading-in';
+              p.fadeTimer = 0;
+            }
+          } else if (p.fadeState === 'fading-in') {
+            p.fadeTimer++;
+            p.fadeOpacity = p.fadeTimer / 8;
+            if (p.fadeTimer >= 8) {
+              p.fadeOpacity = 1;
+              p.fadeState = 'visible';
+              p.fadeTimer = 0;
+            }
+          } else {
+            // visible state — normal flicker timer
+            p.flickerTimer++;
+            if (p.flickerTimer >= p.flickerInterval) {
+              p.flickerTimer = 0;
+              p.flickerInterval = 18 + Math.floor(Math.random() * 72);
+              p.fadeState = 'fading-out';
+              p.fadeTimer = 0;
+            }
           }
         }
+        pb.opacityBuf[i] = p.fadeOpacity;
       }
 
       // Turbulence physics
-      updateTurbulencePhysics(cpu, mouseX, mouseY, time, pb.displacementBuf);
+      const uScale = Math.min(W / 1920, H / 1080);
+      updateTurbulencePhysics(cpu, mouseX, mouseY, time, pb.displacementBuf, uScale);
 
       // Mark dynamic attributes for upload
       (pb.geometry.getAttribute("aBrownian") as THREE.BufferAttribute).needsUpdate = true;
       (pb.geometry.getAttribute("aDisplacement") as THREE.BufferAttribute).needsUpdate = true;
       (pb.geometry.getAttribute("aDigitIndex") as THREE.BufferAttribute).needsUpdate = true;
+      (pb.geometry.getAttribute("aFadeOpacity") as THREE.BufferAttribute).needsUpdate = true;
     }
 
     // ── Smart proximity lines (1 connection per particle, no clusters) ────────
@@ -399,10 +437,14 @@ export default function DataTree() {
 
       const cpu = pb.cpuParticles;
       const n = pb.count;
+      const scale = Math.min(W / 1920, H / 1080);
+      const scaledProxR = PROX_R * scale;
+      const scaledLineMin = LINE_MIN_DIST * scale;
+      const scaledLineMax = LINE_MAX_DIST * scale;
 
       // Collect disturbed particles near cursor
       const near: number[] = [];
-      const proxR2 = PROX_R * PROX_R;
+      const proxR2 = scaledProxR * scaledProxR;
       for (let i = 0; i < n; i++) {
         const p = cpu[i];
         if (p.ep < 0.5 || p.depthFactor < 0.3) continue;
@@ -416,8 +458,8 @@ export default function DataTree() {
       // Track which particles already have a connection (max 1 per particle)
       const connected = new Set<number>();
       let lineCount = 0;
-      const minD2 = LINE_MIN_DIST * LINE_MIN_DIST;
-      const maxD2 = LINE_MAX_DIST * LINE_MAX_DIST;
+      const minD2 = scaledLineMin * scaledLineMin;
+      const maxD2 = scaledLineMax * scaledLineMax;
 
       for (let a = 0; a < near.length && lineCount < MAX_LINES; a++) {
         const idxA = near[a];

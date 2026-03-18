@@ -45,11 +45,13 @@ export function updateTurbulencePhysics(
   mouseX: number,
   mouseY: number,
   time: number,
-  displacementBuf: Float32Array
+  displacementBuf: Float32Array,
+  uniformScale: number = 1
 ): number {
   const n = cpuParticles.length;
   let disturbedCount = 0;
   const mouseActive = mouseX > -100;
+  const scaledInfluenceBase = INFLUENCE_BASE * uniformScale;
 
   for (let i = 0; i < n; i++) {
     const p = cpuParticles[i];
@@ -79,7 +81,7 @@ export function updateTurbulencePhysics(
         sx * 0.012 + time * 0.8,
         sy * 0.012 + time * 0.6
       );
-      const influenceR = INFLUENCE_BASE * (0.6 + noiseVal * 0.9);
+      const influenceR = scaledInfluenceBase * (0.6 + noiseVal * 0.9);
 
       if (dist < influenceR && dist > 0.1) {
         // Depth gate: back particles get much less influence

@@ -21,10 +21,11 @@ function hashInt(i: number): number {
 }
 
 function assignDigit(h: number, darkness: number): number {
-  if (darkness > DIGIT_TRUNK) return h % 3;
-  if (darkness > DIGIT_BRANCH) return 3 + (h % 3);
-  if (darkness > DIGIT_MID) return 6 + (h % 2);
-  return 8 + (h % 2);
+  // Pool: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" (36 chars)
+  if (darkness > DIGIT_TRUNK) return h % 9;            // A–I (indices 0–8)
+  if (darkness > DIGIT_BRANCH) return 6 + (h % 13);    // G–S (indices 6–18)
+  if (darkness > DIGIT_MID) return 12 + (h % 17);      // M–2 (indices 12–28)
+  return 20 + (h % 16);                                 // U–9 (indices 20–35)
 }
 
 function fontSize(darkness: number): number {
@@ -50,6 +51,7 @@ export interface ParticleBuffers {
   brownianBuf: Float32Array;
   displacementBuf: Float32Array;
   digitBuf: Float32Array;
+  opacityBuf: Float32Array;
   /** Static: per-particle scatter positions (rebuilt on resize) */
   scatterBuf: Float32Array;
   count: number;
@@ -75,6 +77,8 @@ export function buildParticleSystem(
   const brownianBuf = new Float32Array(n * 2);
   const displacementBuf = new Float32Array(n * 2);
   const digitBuf = new Float32Array(n);
+  const opacityBuf = new Float32Array(n);
+  for (let j = 0; j < n; j++) opacityBuf[j] = 1.0;
 
   // CPU particle state
   const cpuParticles: ParticleCPU[] = new Array(n);
@@ -100,7 +104,9 @@ export function buildParticleSystem(
     const del = Math.random() * MAX_DELAY;
     delay[i] = del;
 
-    const wf = (0.3 + Math.random() * 0.7) * (1 - d * 0.7);
+    // Low darkness = canopy = higher flutter frequency
+    // High darkness = trunk = lower, slower sway
+    const wf = 0.4 + (1.0 - d) * 0.8; // range 0.4 (trunk) to 1.2 (canopy tips)
     windFreq[i] = wf;
     windPhase[i * 2] = Math.random() * Math.PI * 2;
     windPhase[i * 2 + 1] = Math.random() * Math.PI * 2;
@@ -126,6 +132,9 @@ export function buildParticleSystem(
       screenY: 0,
       delay: del,
       depthFactor: 0,
+      fadeOpacity: 1,
+      fadeState: 'visible' as const,
+      fadeTimer: 0,
     };
   }
 
@@ -155,12 +164,17 @@ export function buildParticleSystem(
   digitAttr.setUsage(THREE.DynamicDrawUsage);
   geometry.setAttribute("aDigitIndex", digitAttr);
 
+  const opacityAttr = new THREE.BufferAttribute(opacityBuf, 1);
+  opacityAttr.setUsage(THREE.DynamicDrawUsage);
+  geometry.setAttribute("aFadeOpacity", opacityAttr);
+
   return {
     geometry,
     cpuParticles,
     brownianBuf,
     displacementBuf,
     digitBuf,
+    opacityBuf,
     scatterBuf: scatterPos,
     count: n,
   };
@@ -197,6 +211,7 @@ attribute float aFontSize;
 attribute vec2 aBrownian;
 attribute vec2 aDisplacement;
 attribute float aDigitIndex;
+attribute float aFadeOpacity;
 
 uniform float uProgress;
 uniform float uRotY;
@@ -205,11 +220,13 @@ uniform float uTime;
 uniform vec2 uResolution;
 uniform float uSceneScale;
 uniform float uDPR;
+uniform float uUniformScale;
 
 varying float vDigitIndex;
 varying float vAlpha;
 varying float vDarkness;
 varying float vPointSize;
+varying float vFadeOpacity;
 
 float easeInOutCubic(float t) {
   return t < 0.5
@@ -254,11 +271,29 @@ void main() {
   // Lerp scatter → target
   vec2 pos = mix(scatter, vec2(tx, ty), ep);
 
-  // Wind (screen-space, gated on ep > 0.5)
-  float windGate = smoothstep(0.45, 0.55, ep);
-  float windX = sin(uTime * aWindFreq + aWindPhase.x) * aWindFreq * 12.0 * ep * windGate;
-  float windY = cos(uTime * aWindFreq * 0.7 + aWindPhase.y) * aWindFreq * 5.0 * ep * windGate;
-  pos += vec2(windX, windY);
+  // Ghost of Tsushima wind — slow uniform wave traveling left to right
+  float windGate = smoothstep(0.05, 0.35, ep);
+
+  // Very slow wave — period ~6 seconds, travels left to right
+  float windSpeed = 0.55;
+  float windSpatialFreq = 0.055;
+
+  // Phase is seeded by world X position so wave TRAVELS across the tree
+  float wavePhase = position.x * windSpatialFreq + uTime * windSpeed;
+
+  // Canopy sways more than trunk — darkness is high for trunk, low for canopy
+  float swayAmt = (1.0 - aDarkness * 0.8) * 10.0;
+
+  // Primary sway — horizontal, slow
+  float windX = sin(wavePhase + aWindPhase.x) * swayAmt * windGate;
+
+  // Secondary micro-turbulence — faster, smaller, gives organic feel
+  float turbulence = sin(wavePhase * 2.3 + aWindPhase.y + 1.57) * swayAmt * 0.18 * windGate;
+
+  // Vertical lift — very subtle, leaves breathe up slightly on the wave crest
+  float windY = sin(wavePhase * 0.8 + aWindPhase.x + 0.9) * swayAmt * 0.08 * windGate;
+
+  pos += vec2(windX + turbulence, windY);
 
   // Spring displacement
   pos += aDisplacement;
@@ -268,13 +303,14 @@ void main() {
   ndc.y = -ndc.y;
   gl_Position = vec4(ndc, 0.0, 1.0);
 
-  // Point size: base font size × perspective × DPR
-  float ptSize = aFontSize * d * uDPR;
+  // Point size: base font size × perspective × DPR × 2.2 for Retina readability
+  float ptSize = aFontSize * d * uDPR * 1.3;
   gl_PointSize = ptSize;
 
   // Varyings
   vPointSize = ptSize;
   vDigitIndex = aDigitIndex;
+  vFadeOpacity = aFadeOpacity;
   float depthAlpha = clamp((d - 0.35) / 0.75, 0.0, 1.0);
 
   // Smooth fade: terrain fades with distance from trunk, canopy edges soften
@@ -310,12 +346,13 @@ varying float vDigitIndex;
 varying float vAlpha;
 varying float vDarkness;
 varying float vPointSize;
+varying float vFadeOpacity;
 
 void main() {
   if (vAlpha < 0.02) discard;
 
   // Map gl_PointCoord to the correct digit cell in the atlas
-  float cellWidth = 1.0 / 10.0;
+  float cellWidth = 1.0 / 36.0;
   float digitU = floor(vDigitIndex + 0.5) * cellWidth;
   vec2 uv = vec2(digitU + gl_PointCoord.x * cellWidth, gl_PointCoord.y);
 
@@ -329,7 +366,7 @@ void main() {
   float g = (1.0 - vDarkness) * 0.18 + 0.04; // range: 0.04 (black) to 0.22 (very dark grey)
   vec3 color = vec3(g);
 
-  gl_FragColor = vec4(color, glyphAlpha * vAlpha);
+  gl_FragColor = vec4(color, glyphAlpha * vAlpha * vFadeOpacity);
 }
 `;
 
@@ -349,6 +386,7 @@ export function createParticleMaterial(
       uResolution: { value: new THREE.Vector2(1, 1) },
       uSceneScale: { value: 1 },
       uDPR: { value: 1 },
+      uUniformScale: { value: 1 },
       uAtlas: { value: atlas },
     },
     transparent: true,

@@ -1,16 +1,16 @@
 import * as THREE from "three";
 
 const CELL = 64;
-const COLS = 10; // digits 0-9
-const ATLAS_W = CELL * COLS; // 640
+const COLS = 36; // A-Z (26) + 0-9 (10)
+const ATLAS_W = CELL * COLS; // 2304
 const ATLAS_H = CELL;
 const FONT = 'bold 48px "Courier New", monospace';
 
 /**
- * Generate a bitmap font atlas texture for digits 0–9.
+ * Generate a bitmap font atlas texture for A–Z + 0–9 (36 cells).
  * Uses RGBA with alpha from the rendered glyph.
  * At small point sizes (8-13px), bitmap sampling produces crisper
- * digits than SDF which tends to over-smooth at these scales.
+ * glyphs than SDF which tends to over-smooth at these scales.
  */
 export function generateSDFAtlas(): THREE.DataTexture {
   const canvas = document.createElement("canvas");
@@ -26,8 +26,9 @@ export function generateSDFAtlas(): THREE.DataTexture {
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
 
-  for (let i = 0; i < 10; i++) {
-    ctx.fillText(String(i), i * CELL + CELL / 2, CELL / 2);
+  const GLYPHS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  for (let i = 0; i < 36; i++) {
+    ctx.fillText(GLYPHS[i], i * CELL + CELL / 2, CELL / 2);
   }
 
   // Extract pixel data — use the red channel as alpha (white = opaque)
