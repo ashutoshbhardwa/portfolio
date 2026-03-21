@@ -228,6 +228,7 @@ varying float vDigitIndex;
 varying float vAlpha;
 varying float vDarkness;
 varying float vPointSize;
+varying float vEp;
 varying float vFadeOpacity;
 
 float easeInOutCubic(float t) {
@@ -322,6 +323,7 @@ void main() {
 
   // Varyings
   vPointSize = ptSize;
+  vEp = ep;
   vDigitIndex = aDigitIndex;
   vFadeOpacity = aFadeOpacity;
   float depthAlpha = clamp((d - 0.35) / 0.75, 0.0, 1.0);
@@ -361,11 +363,15 @@ export const FRAGMENT_SHADER = /* glsl */ `
 precision highp float;
 
 uniform sampler2D uAtlas;
+uniform float uTime;
+uniform vec3 uTintColor;
+uniform float uTintStrength;
 
 varying float vDigitIndex;
 varying float vAlpha;
 varying float vDarkness;
 varying float vPointSize;
+varying float vEp;
 varying float vFadeOpacity;
 
 void main() {
@@ -373,7 +379,14 @@ void main() {
 
   // Map gl_PointCoord to the correct digit cell in the atlas
   float cellWidth = 1.0 / 36.0;
-  float digitU = floor(vDigitIndex + 0.5) * cellWidth;
+  float glitchDigit = vDigitIndex;
+  if (vEp < 0.5) {
+    float g1 = fract(sin(vDigitIndex * 127.1 + uTime * 11.3) * 43758.5);
+    float g2 = fract(sin(vDigitIndex * 311.7 + uTime * 7.1) * 23421.6);
+    float glitchStrength = (1.0 - vEp / 0.5) * 0.9;
+    if (g1 < glitchStrength) glitchDigit = floor(g2 * 36.0);
+  }
+  float digitU = floor(glitchDigit + 0.5) * cellWidth;
   vec2 uv = vec2(digitU + gl_PointCoord.x * cellWidth, gl_PointCoord.y);
 
   // Sample bitmap atlas alpha
@@ -384,7 +397,13 @@ void main() {
   // Color: all particles are near-black (#0A0A0A), trunk darkest
   // Trunk (high darkness) = pure black, canopy = very dark grey
   float g = (1.0 - vDarkness) * 0.18 + 0.04; // range: 0.04 (black) to 0.22 (very dark grey)
-  vec3 color = vec3(g);
+  vec3 baseColor = vec3(g);
+
+  // Tint: lerp toward brand color when hovering skill zones
+  // Trunk (high darkness) gets full brand color, canopy gets lighter shade
+  // This preserves depth while clearly showing the brand color
+  vec3 tintedColor = uTintColor * (0.4 + vDarkness * 0.6);
+  vec3 color = mix(baseColor, tintedColor, uTintStrength);
 
   gl_FragColor = vec4(color, glyphAlpha * vAlpha * vFadeOpacity);
 }
@@ -410,6 +429,8 @@ export function createParticleMaterial(
       uDensityScale: { value: 1.0 },
       uDisintegration: { value: 0.0 },
       uAtlas: { value: atlas },
+      uTintColor: { value: new THREE.Vector3(0, 0, 0) },
+      uTintStrength: { value: 0.0 },
     },
     transparent: true,
     depthTest: false,
