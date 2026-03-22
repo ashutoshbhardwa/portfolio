@@ -32,7 +32,7 @@ export const MAX_TILT_X = 0.62;  // ±35° vertical tilt clamp (initial is -30°
 export const DRAG_TILT_SPEED = 0.005;
 export const DRAG_ROTATE_SPEED = 0.004;
 export const SCROLL_ROTATE_SPEED = 0.002;
-export const ROT_LERP = 0.022;
+export const ROT_LERP = 0.045;
 
 // ── Font sizes per darkness zone (px) ────────────────────────────────────────
 export const FONT_SIZES: [number, number, number, number] = [14, 12, 10, 8];

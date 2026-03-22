@@ -384,7 +384,7 @@ export default function DataTree() {
       const dy = e.clientY - lastDragY;
       lastDragX = e.clientX;
       lastDragY = e.clientY;
-      if (isDragging && progress > 0.85 && progress < 1.4) {
+      if (isDragging && progress > 0.85) {
         targetRotY += dx * DRAG_ROTATE_SPEED;
         targetRotX = clamp(targetRotX - dy * DRAG_TILT_SPEED, -MAX_TILT_X, MAX_TILT_X);
       }
@@ -471,14 +471,18 @@ export default function DataTree() {
         p.screenX = cx + windX;
         p.screenY = cy + windY;
 
-        // Brownian motion (scatter state)
-        if (p.ep < 0.98) {
-          p.bvx += (Math.random() - 0.5) * 0.3;
-          p.bvy += (Math.random() - 0.5) * 0.3;
-          p.bvx *= 0.92;
-          p.bvy *= 0.92;
-          pb.brownianBuf[i * 2] += p.bvx;
-          pb.brownianBuf[i * 2 + 1] += p.bvy;
+        // Brownian motion — active in scatter AND disintegration
+        {
+          const disintActive = progress > 0.9;
+          const brownianScale = p.ep < 0.98 ? 1.0 : disintActive ? 0.15 : 0;
+          if (brownianScale > 0) {
+            p.bvx += (Math.random() - 0.5) * 0.3 * brownianScale;
+            p.bvy += (Math.random() - 0.5) * 0.3 * brownianScale;
+            p.bvx *= 0.92;
+            p.bvy *= 0.92;
+            pb.brownianBuf[i * 2] += p.bvx;
+            pb.brownianBuf[i * 2 + 1] += p.bvy;
+          }
         }
 
         // Digit flicker — rapid glitch when disturbed by cursor
@@ -983,7 +987,7 @@ export default function DataTree() {
       particleMat.uniforms.uTime.value = time;
       const disint = clamp((progress - 0.86) / 0.8, 0, 1);
       particleMat.uniforms.uDisintegration.value = disint;
-      if (progress >= 1.65) targetProgress = 1.65;
+      if (progress >= 1.50) targetProgress = 1.50;
       lineMat.uniforms.uTime.value = time;
 
       // Smart lines
@@ -1113,7 +1117,7 @@ export default function DataTree() {
       {/* WORK pill — bottom-left, aligned with density pill */}
       <div
         ref={workPillRef}
-        onClick={() => { targetProgressRef.current = 1.65; }}
+        onClick={() => { targetProgressRef.current = 1.50; }}
         style={{
           position: 'absolute',
           bottom: 'clamp(32px, 8vh, 135px)',
