@@ -1116,8 +1116,8 @@ export default function DataTree() {
         onClick={() => { targetProgressRef.current = 1.65; }}
         style={{
           position: 'absolute',
-          bottom: 135,
-          left: 63,
+          bottom: 'clamp(32px, 8vh, 135px)',
+          left: 'clamp(40px, 4.2vw, 80px)',
           zIndex: 5,
           opacity: 0,
           pointerEvents: 'none',
@@ -1165,8 +1165,8 @@ export default function DataTree() {
         ref={nameRef}
         style={{
           position: 'absolute',
-          top: 22,
-          left: 63,
+          top: 'clamp(20px, 2.2vh, 40px)',
+          left: 'clamp(40px, 4.2vw, 80px)',
           zIndex: 4,
           pointerEvents: 'none',
           opacity: 0,
@@ -1175,7 +1175,7 @@ export default function DataTree() {
         <div style={{
           fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif',
           fontWeight: 900,
-          fontSize: 'clamp(48px, 4.86vw, 75px)',
+          fontSize: 'clamp(42px, 6.5vh, 90px)',
           lineHeight: 0.88,
           letterSpacing: '-0.05em',
           color: '#0A0A0A',
@@ -1191,7 +1191,7 @@ export default function DataTree() {
         style={{
           position: 'absolute',
           top: 'clamp(128px, 17vh, 184px)',
-          left: 63,
+          left: 'clamp(40px, 4.2vw, 80px)',
           zIndex: 4,
           pointerEvents: 'none',
           opacity: 0,
@@ -1205,25 +1205,26 @@ export default function DataTree() {
           letterSpacing: '0em',
           color: 'rgb(10,10,10)',
           textTransform: 'uppercase',
+          marginTop: 'clamp(10px, 1.5vh, 20px)',
         }}>
           <TextScramble trigger={homepageRevealed} duration={0.8} speed={0.04}>MULTI-DISCIPLINARY DESIGNER</TextScramble>
         </div>
       </div>
 
-      {/* Contextual paragraph — Figma 8059:8892 "Ambient Paragraph" */}
+      {/* Contextual paragraph — above WORK pill */}
       <div
         ref={paraRef}
         style={{
           position: 'absolute',
-          top: 41,
-          left: 'clamp(340px, 27.8vw, 533px)',
-          width: 'clamp(200px, 17.2vw, 331px)',
+          bottom: 'clamp(120px, 16vh, 260px)',
+          left: 'clamp(40px, 4.2vw, 80px)',
+          maxWidth: 280,
           zIndex: 5,
           pointerEvents: 'none',
           opacity: 0,
           fontFamily: 'Inter, sans-serif',
           fontWeight: 400,
-          fontSize: 8,
+          fontSize: 'clamp(11px, 1vw, 16px)',
           lineHeight: 1.21,
           letterSpacing: '0em',
           color: 'rgba(0,0,0,0.45)',
@@ -1244,8 +1245,8 @@ export default function DataTree() {
         ref={navRef}
         style={{
           position: 'absolute',
-          top: 42,
-          right: 35,
+          top: 'clamp(24px, 3vh, 48px)',
+          right: 'clamp(24px, 2.6vw, 48px)',
           zIndex: 5,
           opacity: 0,
           display: 'flex',
@@ -1278,8 +1279,8 @@ export default function DataTree() {
         ref={densityPillRef}
         style={{
           position: 'absolute',
-          bottom: 135,
-          right: 35,
+          bottom: 'clamp(24px, 3vh, 48px)',
+          right: 'clamp(24px, 2.6vw, 48px)',
           zIndex: 5,
           opacity: 0,
           display: 'flex',

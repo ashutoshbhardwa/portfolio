@@ -102,10 +102,10 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage({ v
       pointerEvents: visible ? 'auto' : 'none',
     }}>
       {/* WORK title — top left */}
-      <div style={{ position: 'absolute', top: 40, left: 60 }}>
+      <div style={{ position: 'absolute', top: 'clamp(24px, 3vh, 48px)', left: 'clamp(40px, 4vw, 80px)' }}>
         <div style={{
           fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif',
-          fontWeight: 700, fontSize: 'clamp(80px, 8vw, 130px)',
+          fontWeight: 700, fontSize: 'clamp(60px, 8vw, 130px)',
           letterSpacing: '-0.04em', lineHeight: 1, color: 'var(--wp-text, #000)',
         }}>
           <TextScramble trigger={scrambleTrigger} duration={1.0} speed={0.04} as="div">
@@ -115,7 +115,7 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage({ v
         <div style={{
           fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif',
           fontWeight: 400, fontSize: 'clamp(12px, 1vw, 16px)',
-          letterSpacing: '-0.02em', color: 'var(--wp-text, #000)', marginTop: 4,
+          letterSpacing: '-0.02em', color: 'var(--wp-text, #000)', marginTop: 'clamp(8px, 1vh, 16px)',
         }}>
           <TextScramble trigger={scrambleTrigger} duration={0.8} speed={0.03} as="div">
             MULTI-DISCIPLINARY DESIGNER
@@ -123,23 +123,11 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage({ v
         </div>
       </div>
 
-      {/* Ambient text — top right */}
+      {/* Left column — vertically centered: toggle, pills, ambient, HOME */}
       <div style={{
-        position: 'absolute', top: 28, left: 420, right: 200,
-        fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif',
-        fontSize: 11, letterSpacing: '0.02em', color: 'var(--wp-text, #000)',
-        lineHeight: 1.5, maxWidth: 340,
-      }}>
-        <TextScramble key={ambientKey} trigger={true} duration={0.6} speed={0.025} as="span">
-          {ambientText}
-        </TextScramble>
-      </div>
-
-      {/* EXP/SKILL toggle + pills — vertically centered left */}
-      <div style={{
-        position: 'absolute', top: '50%', left: 60,
+        position: 'absolute', top: '50%', left: 'clamp(40px, 4vw, 80px)',
         transform: 'translateY(-50%)',
-        display: 'flex', flexDirection: 'column', gap: 20,
+        display: 'flex', flexDirection: 'column', gap: 0,
       }}>
         {/* Toggle */}
         <PillReveal delay={0}>
@@ -162,7 +150,7 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage({ v
 
         {/* Company/Skill pills */}
         <div style={{
-          display: 'flex', flexDirection: 'column', gap: 12,
+          display: 'flex', flexDirection: 'column', gap: 12, marginTop: 20,
         }}>
         {pills.map((pill, i) => (
           <PillReveal key={pill.key} delay={i * 80}>
@@ -188,8 +176,20 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage({ v
         </div>
       </div>
 
+      {/* Ambient paragraph — above HOME pill */}
+      <div style={{
+        position: 'absolute', bottom: 'clamp(90px, 12vh, 140px)', left: 'clamp(40px, 4vw, 80px)', maxWidth: 260,
+        fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif',
+        fontSize: 'clamp(11px, 1vw, 16px)', letterSpacing: '0.02em', color: 'var(--wp-text, #000)',
+        lineHeight: 1.5,
+      }}>
+        <TextScramble key={ambientKey} trigger={true} duration={0.6} speed={0.025} as="span">
+          {ambientText}
+        </TextScramble>
+      </div>
+
       {/* HOME pill — bottom left */}
-      <div style={{ position: 'absolute', bottom: 40, left: 63 }}>
+      <div style={{ position: 'absolute', bottom: 'clamp(24px, 3vh, 48px)', left: 'clamp(40px, 4vw, 80px)' }}>
         <PillReveal delay={0}>
           <div onClick={onHomePill} style={{ ...PILL_STYLE, cursor: 'pointer' }}>
             <TextScramble trigger={scrambleTrigger} as="span">HOME</TextScramble>
@@ -198,7 +198,7 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage({ v
       </div>
 
       {/* DENSITY pill — bottom right */}
-      <div style={{ position: 'absolute', bottom: 40, right: 40 }}>
+      <div style={{ position: 'absolute', bottom: 'clamp(24px, 3vh, 48px)', right: 'clamp(24px, 2.6vw, 48px)' }}>
         <PillReveal delay={0}>
           <div style={{ ...PILL_STYLE, pointerEvents: 'none' }}>
             <TextScramble trigger={scrambleTrigger} as="span">
