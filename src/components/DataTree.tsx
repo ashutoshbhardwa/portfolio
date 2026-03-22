@@ -1,6 +1,8 @@
 "use client";
 
-import React, { useRef, useEffect } from "react";
+import React, { useRef, useEffect, useState } from "react";
+import WorkPage from "./WorkPage";
+import TextScramble from "./TextScramble";
 import * as THREE from "three";
 import {
   FOV,
@@ -58,6 +60,22 @@ function assignDigit(darkness: number): number {
   return 20 + (r % 16);                                 // U–9 (indices 20–35)
 }
 
+// ── Ambient copy ─────────────────────────────────────────────────────────────
+
+const AMBIENT_COPY: Record<string, string> = {
+  'DAILYOBJECTS': "Brand + Product Designer, 2022\u20132024. Crafting brand systems and product design for India\u2019s leading accessories company.",
+  'CREPDOGCREW': "Visual Designer, 2021\u20132022. Building the visual language for India\u2019s sneaker culture. Drops, campaigns, community.",
+  'PROBO': "Product Designer, 2023\u20132024. Designing for a prediction market at scale. Speed, clarity, trust.",
+  'STABLE MONEY': "Lead Designer, 2024\u2013Present. Making fixed income feel modern. Systematic design for a complex financial product.",
+  'OTHER': "Freelance, 2019\u2013Present. Independent work, passion projects, and things that don\u2019t fit a box.",
+  'MOTION DESIGN': "Motion as a language. Transitions, interactions, and things that feel alive.",
+  'SYSTEMS': "Design systems that scale. Tokens, components, documentation.",
+  '3D': "Dimensional work. Objects, environments, and spatial thinking.",
+  'BRAND': "Identity at its core. Marks, systems, and how things present themselves.",
+  'GLITCH': "Controlled chaos. Distortion as aesthetic, noise as signal.",
+};
+const DEFAULT_AMBIENT = "VISUAL DESIGNER \u00B7 BANGALORE \u00B7 MULTI-DISCIPLINARY DESIGNER \u00B7 VISUAL DESIGNER \u00B7 BANGALORE";
+
 // ── Component ────────────────────────────────────────────────────────────────
 
 export default function DataTree() {
@@ -78,6 +96,20 @@ export default function DataTree() {
   const navRef = useRef<HTMLDivElement>(null);
   const densityPillRef = useRef<HTMLDivElement>(null);
   const blurRectRef = useRef<HTMLDivElement>(null);
+
+  // Work page state
+  const [workVisible, setWorkVisible] = useState(false);
+  const workVisibleRef = useRef(false);
+  const targetProgressRef = useRef(0);
+
+  // Ambient text state
+  const [ambientText, setAmbientText] = useState(DEFAULT_AMBIENT);
+  const [ambientKey, setAmbientKey] = useState('default');
+
+  // Homepage reveal — triggers scramble + pill expansion when overlays first become visible
+  const [homepageRevealed, setHomepageRevealed] = useState(false);
+  const homepageRevealedRef = useRef(false);
+  const workPageRef = useRef<HTMLDivElement>(null);
 
   // ── Color state (lerped in render loop) ──────────────────────────────────
   const colorStateRef = useRef({
@@ -112,6 +144,10 @@ export default function DataTree() {
       cs.activeZone = colorKey;
       cs.zoneType = zone.type;
     }
+
+    // Update ambient text
+    setAmbientText(AMBIENT_COPY[colorKey] ?? DEFAULT_AMBIENT);
+    setAmbientKey(colorKey + Date.now());
   }
 
   function hideWatermark() {
@@ -125,6 +161,10 @@ export default function DataTree() {
     // so the correct branch handles the transition. They reset in the else block.
     const cs = colorStateRef.current;
     cs.targetStrength = 0;
+
+    // Reset ambient text
+    setAmbientText(DEFAULT_AMBIENT);
+    setAmbientKey('default');
   }
 
   useEffect(() => {
@@ -601,6 +641,12 @@ export default function DataTree() {
       const hideAmount = clamp(1 - (progress - 0.95) / 0.2, 0, 1);
       const overlayOpacity = showAmount * hideAmount;
 
+      // Trigger homepage scramble + pill expansion when first visible
+      if (overlayOpacity > 0.15 && !homepageRevealedRef.current) {
+        homepageRevealedRef.current = true;
+        setHomepageRevealed(true);
+      }
+
       if (nameRef.current) {
         nameRef.current.style.opacity = String(overlayOpacity);
       }
@@ -808,6 +854,38 @@ export default function DataTree() {
           });
         }
       }
+
+      // WorkPage color sync via CSS variables
+      if (workPageRef.current && workVisibleRef.current) {
+        const s = cs.strength;
+        const el = workPageRef.current;
+        if (s > 0.01) {
+          const isExp = cs.zoneType === 'experience';
+          if (isExp) {
+            el.style.setProperty('--wp-text', '#ffffff');
+            el.style.setProperty('--wp-pill-bg', '#ffffff');
+            el.style.setProperty('--wp-pill-text', `rgb(${r255},${g255},${b255})`);
+            el.style.setProperty('--wp-toggle-bg', 'rgba(255,255,255,0.2)');
+          } else {
+            el.style.setProperty('--wp-text', `rgb(${r255},${g255},${b255})`);
+            el.style.setProperty('--wp-pill-bg', `rgb(${r255},${g255},${b255})`);
+            el.style.setProperty('--wp-pill-text', '#ffffff');
+            el.style.setProperty('--wp-toggle-bg', `rgba(${r255},${g255},${b255},0.15)`);
+          }
+        } else {
+          el.style.setProperty('--wp-text', '#000000');
+          el.style.setProperty('--wp-pill-bg', '#000000');
+          el.style.setProperty('--wp-pill-text', '#ffffff');
+          el.style.setProperty('--wp-toggle-bg', 'transparent');
+        }
+      }
+
+      // WorkPage visibility — show when disintegration is well underway
+      const shouldShow = progress >= 1.3;
+      if (shouldShow !== workVisibleRef.current) {
+        workVisibleRef.current = shouldShow;
+        setWorkVisible(shouldShow);
+      }
     }
 
     // ── Glitch effect on scroll hint ──────────────────────────────────────────
@@ -872,6 +950,12 @@ export default function DataTree() {
 
     function frame() {
       time += 0.016;
+
+      // Sync external progress overrides (WORK pill, HOME pill)
+      if (targetProgressRef.current !== 0) {
+        targetProgress = targetProgressRef.current;
+        targetProgressRef.current = 0;
+      }
 
       // Smooth progress
       progress += (targetProgress - progress) * PROGRESS_LERP;
@@ -1029,6 +1113,7 @@ export default function DataTree() {
       {/* WORK pill — bottom-left, aligned with density pill */}
       <div
         ref={workPillRef}
+        onClick={() => { targetProgressRef.current = 1.65; }}
         style={{
           position: 'absolute',
           bottom: 135,
@@ -1036,6 +1121,7 @@ export default function DataTree() {
           zIndex: 5,
           opacity: 0,
           pointerEvents: 'none',
+          cursor: 'pointer',
         }}
       >
         <div
@@ -1054,7 +1140,7 @@ export default function DataTree() {
             justifyContent: 'center',
           }}
         >
-          WORK
+          <TextScramble trigger={homepageRevealed} duration={0.6} speed={0.04}>WORK</TextScramble>
         </div>
       </div>
 
@@ -1094,7 +1180,9 @@ export default function DataTree() {
           letterSpacing: '-0.05em',
           color: '#0A0A0A',
         }}>
-          ASHUTOSH<br />BHARDWAJ
+          <TextScramble trigger={homepageRevealed} duration={1.2} speed={0.05} as="span">ASHUTOSH</TextScramble>
+          <br />
+          <TextScramble trigger={homepageRevealed} duration={1.2} speed={0.05} as="span">BHARDWAJ</TextScramble>
         </div>
       </div>
 
@@ -1118,7 +1206,7 @@ export default function DataTree() {
           color: 'rgb(10,10,10)',
           textTransform: 'uppercase',
         }}>
-          MULTI-DISCIPLINARY DESIGNER
+          <TextScramble trigger={homepageRevealed} duration={0.8} speed={0.04}>MULTI-DISCIPLINARY DESIGNER</TextScramble>
         </div>
       </div>
 
@@ -1145,7 +1233,7 @@ export default function DataTree() {
           maxHeight: 130,
         }}
       >
-        VISUAL DESIGNER &middot; BANGALORE VISUAL DESIGNER &middot; BANGALORE VISUAL DESIGNER &middot; BANGALORE VISUAL DESIGNER &middot; BANGALORE VISUAL DESIGNER &middot; BANGALORE VISUAL DESIGNER &middot; BANGALORE VISUAL DESIGNER &middot; BANGALORE VISUAL DESIGNER &middot; BANGALORE VISUAL DESIGNER &middot; BANGALORE VISUAL DESIGNER &middot; BANGALORE VISUAL DESIGNER &middot; BANGALORE VISUAL DESIGNER &middot; BANGALORE
+        <TextScramble key={ambientKey} trigger={true} duration={0.6} speed={0.03}>{ambientText}</TextScramble>
       </div>
 
 
@@ -1181,8 +1269,8 @@ export default function DataTree() {
           pointerEvents: 'none',
         }}
       >
-        <span>ABOUT</span>
-        <span>CONTACT</span>
+        <TextScramble trigger={homepageRevealed} duration={0.6} speed={0.04}>ABOUT</TextScramble>
+        <TextScramble trigger={homepageRevealed} duration={0.6} speed={0.04}>CONTACT</TextScramble>
       </div>
 
       {/* Density pill bottom-right — Figma 8060:29309 */}
@@ -1208,7 +1296,7 @@ export default function DataTree() {
           pointerEvents: 'none',
         }}
       >
-        ⌘ + / ⌘ − &nbsp; [DENSITY]
+        <TextScramble trigger={homepageRevealed} duration={0.6} speed={0.04}>{'\u2318 + / \u2318 \u2212  [DENSITY]'}</TextScramble>
       </div>
 
       {/* Downward double-chevron arrow — centered, aligned with pills */}
@@ -1355,6 +1443,15 @@ export default function DataTree() {
           />
         ))}
       </div>
+
+      {/* Work page overlay */}
+      <WorkPage
+        ref={workPageRef}
+        visible={workVisible}
+        onHoverZone={(key) => showWatermark(key, key)}
+        onLeaveZone={() => hideWatermark()}
+        onHomePill={() => { targetProgressRef.current = 0.001; }}
+      />
     </div>
   );
 }
