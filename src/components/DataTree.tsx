@@ -40,6 +40,93 @@ import {
   createLineMaterial,
   type ParticleBuffers,
 } from "./data-tree/particle-system";
+import { getCDCScatterPositions, getBentoPoints } from "./data-tree/logo-sampler";
+
+// ── PillButton ──────────────────────────────────────────────────────────────
+
+function PillButton({ children, onClick, onMouseEnter, onMouseLeave, style }: {
+  children: string;
+  onClick?: () => void;
+  onMouseEnter?: () => void;
+  onMouseLeave?: () => void;
+  style?: React.CSSProperties;
+}) {
+  const [displayText, setDisplayText] = React.useState(children);
+  const [scale, setScale] = React.useState(1);
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  const iRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const scramble30 = () => {
+    if (iRef.current) clearInterval(iRef.current);
+    let ticks = 0;
+    iRef.current = setInterval(() => {
+      let out = '';
+      for (let i = 0; i < children.length; i++) {
+        if (children[i] === ' ') { out += ' '; continue; }
+        out += Math.random() < 0.3
+          ? chars[Math.floor(Math.random() * chars.length)]
+          : children[i];
+      }
+      setDisplayText(out);
+      ticks++;
+      if (ticks > 8) { clearInterval(iRef.current!); setDisplayText(children); }
+    }, 40);
+  };
+
+  const scrambleFull = () => {
+    if (iRef.current) clearInterval(iRef.current);
+    let step = 0;
+    const steps = 12;
+    iRef.current = setInterval(() => {
+      const progress = step / steps;
+      let out = '';
+      for (let i = 0; i < children.length; i++) {
+        if (children[i] === ' ') { out += ' '; continue; }
+        out += progress * children.length > i
+          ? children[i]
+          : chars[Math.floor(Math.random() * chars.length)];
+      }
+      setDisplayText(out);
+      step++;
+      if (step > steps) { clearInterval(iRef.current!); setDisplayText(children); }
+    }, 35);
+  };
+
+  const handleMouseEnter = () => { scramble30(); onMouseEnter?.(); };
+  const handleMouseLeave = () => {
+    if (iRef.current) clearInterval(iRef.current);
+    setDisplayText(children);
+    onMouseLeave?.();
+  };
+  const handleClick = () => {
+    setScale(0.92);
+    setTimeout(() => setScale(1.04), 80);
+    setTimeout(() => setScale(1), 180);
+    scrambleFull();
+    onClick?.();
+  };
+
+  React.useEffect(() => () => {
+    if (iRef.current) clearInterval(iRef.current);
+  }, []);
+
+  return (
+    <div
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+      onClick={handleClick}
+      style={{
+        ...style,
+        transform: `scale(${scale})`,
+        transition: 'transform 0.1s cubic-bezier(0.22, 1, 0.36, 1)',
+        cursor: 'pointer',
+        userSelect: 'none',
+      }}
+    >
+      {displayText}
+    </div>
+  );
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -101,6 +188,7 @@ export default function DataTree() {
   const [workVisible, setWorkVisible] = useState(false);
   const workVisibleRef = useRef(false);
   const targetProgressRef = useRef(0);
+  const resetProgressRef = useRef<() => void>(() => {});
 
   // Ambient text state
   const [ambientText, setAmbientText] = useState(DEFAULT_AMBIENT);
@@ -110,6 +198,19 @@ export default function DataTree() {
   const [homepageRevealed, setHomepageRevealed] = useState(false);
   const homepageRevealedRef = useRef(false);
   const workPageRef = useRef<HTMLDivElement>(null);
+
+  // Logo morph state (legacy CDC)
+  const logoModeRef = useRef(false);
+  const savedScatterRef = useRef<Float32Array | null>(null);
+  const setLogoModeRef = useRef<(active: boolean) => void>(() => {});
+  const logoLockedRef = useRef<string | null>(null);
+
+  // Bento thumbnail formation state
+  const bentoModeRef = useRef(false);
+  const bentoSavedScatterRef = useRef<Float32Array | null>(null);
+  const bentoTargetRef = useRef<Float32Array | null>(null); // target positions to lerp toward
+  const bentoSavedZRef = useRef<Float32Array | null>(null); // saved Z positions
+  const setBentoModeRef = useRef<(active: boolean, key: string) => void>(() => {});
 
   // ── Color state (lerped in render loop) ──────────────────────────────────
   const colorStateRef = useRef({
@@ -310,6 +411,93 @@ export default function DataTree() {
       redistributeScatter(pb.scatterBuf, scatterAttr, W, H);
     }
 
+    // ── Logo morph function ────────────────────────────────────────────────
+    setLogoModeRef.current = (active: boolean) => {
+      if (!pb) return;
+      const scatterAttr = pb.geometry.getAttribute('aScatterPos') as THREE.BufferAttribute;
+      const brownianAttr = pb.geometry.getAttribute('aBrownian') as THREE.BufferAttribute;
+      if (active && !logoModeRef.current) {
+        // Save current scatter positions
+        savedScatterRef.current = new Float32Array(pb.scatterBuf);
+        // Get logo positions and copy into scatterBuf
+        const logoPositions = getCDCScatterPositions(pb.count, W, H);
+        pb.scatterBuf.set(logoPositions);
+        scatterAttr.needsUpdate = true;
+        // Zero out brownian drift so particles spring cleanly to logo positions
+        pb.brownianBuf.fill(0);
+        brownianAttr.needsUpdate = true;
+        // Reset per-particle brownian velocities
+        for (let i = 0; i < pb.count; i++) {
+          pb.cpuParticles[i].bvx = 0;
+          pb.cpuParticles[i].bvy = 0;
+        }
+        logoModeRef.current = true;
+      } else if (!active && logoModeRef.current) {
+        // Restore saved scatter positions
+        if (savedScatterRef.current) {
+          pb.scatterBuf.set(savedScatterRef.current);
+          scatterAttr.needsUpdate = true;
+        }
+        logoModeRef.current = false;
+      }
+    };
+
+    // ── Bento thumbnail formation ─────────────────────────────────────────────
+    setBentoModeRef.current = (active: boolean, key: string) => {
+      if (!pb) return;
+
+      if (active && !bentoModeRef.current) {
+        // Save original scatter if not already saved
+        if (!bentoSavedScatterRef.current) {
+          bentoSavedScatterRef.current = new Float32Array(pb.scatterBuf);
+        }
+        // Set bento target — lerp will happen in RAF loop
+        bentoTargetRef.current = getBentoPoints(key, pb.count, W, H);
+        // Zero brownian so lerp is clean
+        pb.brownianBuf.fill(0);
+        const brownianAttr = pb.geometry.getAttribute('aBrownian') as THREE.BufferAttribute;
+        brownianAttr.needsUpdate = true;
+        for (let i = 0; i < pb.count; i++) {
+          pb.cpuParticles[i].bvx = 0;
+          pb.cpuParticles[i].bvy = 0;
+        }
+        // Flatten Z to zero — removes 3D depth spread
+        const posArr = pb.geometry.getAttribute('position').array as Float32Array;
+        bentoSavedZRef.current = new Float32Array(pb.count);
+        for (let i = 0; i < pb.count; i++) {
+          bentoSavedZRef.current[i] = posArr[i * 3 + 2];
+          posArr[i * 3 + 2] = 0;
+        }
+        (pb.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
+        // Increase particle size for denser fill
+        particleMat.uniforms.uDensityScale.value = 5.0;
+        bentoModeRef.current = true;
+      } else if (!active && bentoModeRef.current) {
+        // Set target back to saved scatter — lerp will animate back
+        if (bentoSavedScatterRef.current) {
+          bentoTargetRef.current = new Float32Array(bentoSavedScatterRef.current);
+        }
+        // Restore Z depth
+        if (bentoSavedZRef.current) {
+          const posArr = pb.geometry.getAttribute('position').array as Float32Array;
+          for (let i = 0; i < pb.count; i++) {
+            posArr[i * 3 + 2] = bentoSavedZRef.current[i];
+          }
+          (pb.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
+          bentoSavedZRef.current = null;
+        }
+        // Restore original density
+        particleMat.uniforms.uDensityScale.value = densityScale;
+        bentoModeRef.current = false;
+      }
+    };
+
+    // ── Progress reset (for HOME pill) ──────────────────────────────────────
+    resetProgressRef.current = () => {
+      targetProgress = 0;
+      progress = 0;
+    };
+
     // ── Resize observer ──────────────────────────────────────────────────────
     const ro = new ResizeObserver(() => resize());
     ro.observe(container);
@@ -327,7 +515,6 @@ export default function DataTree() {
     }
 
     const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
       markInteracted();
 
       // SCROLL UP — always works regardless of state
@@ -363,7 +550,6 @@ export default function DataTree() {
       isDragging = true;
       lastDragX = e.clientX;
       lastDragY = e.clientY;
-      container.setPointerCapture(e.pointerId);
     };
 
     const onPointerMove = (e: PointerEvent) => {
@@ -390,19 +576,25 @@ export default function DataTree() {
       }
     };
 
-    const onPointerUp = () => {
+    const onPointerUp = (e: PointerEvent) => {
       isDragging = false;
+      try { container.releasePointerCapture(e.pointerId); } catch (_) {}
     };
-    const onPointerLeave = () => {
+    const onPointerLeave = (e: PointerEvent) => {
+      isDragging = false;
       mouseX = -9999;
       mouseY = -9999;
+      try { container.releasePointerCapture(e.pointerId); } catch (_) {}
     };
 
-    container.addEventListener("wheel", onWheel, { passive: false });
+    const onWindowBlur = () => { isDragging = false; };
+
+    container.addEventListener("wheel", onWheel, { passive: true });
     container.addEventListener("pointerdown", onPointerDown);
     container.addEventListener("pointermove", onPointerMove);
     container.addEventListener("pointerup", onPointerUp);
     container.addEventListener("pointerleave", onPointerLeave);
+    window.addEventListener("blur", onWindowBlur);
 
     // ── CPU per-frame work ───────────────────────────────────────────────────
 
@@ -471,10 +663,11 @@ export default function DataTree() {
         p.screenX = cx + windX;
         p.screenY = cy + windY;
 
-        // Brownian motion — active in scatter AND disintegration
+        // Brownian motion — active in scatter AND disintegration, suppressed in logo mode
         {
           const disintActive = progress > 0.9;
-          const brownianScale = p.ep < 0.98 ? 1.0 : disintActive ? 0.15 : 0;
+          const inFormationMode = logoModeRef.current || bentoModeRef.current;
+          const brownianScale = inFormationMode ? 0 : (p.ep < 0.98 ? 1.0 : disintActive ? 0.15 : 0);
           if (brownianScale > 0) {
             p.bvx += (Math.random() - 0.5) * 0.3 * brownianScale;
             p.bvy += (Math.random() - 0.5) * 0.3 * brownianScale;
@@ -662,7 +855,8 @@ export default function DataTree() {
       if (starScreenRef.current) {
         const starOpacity = clamp((progress - 1.4) / 0.3, 0, 1);
         starScreenRef.current.style.opacity = String(starOpacity);
-        starScreenRef.current.style.pointerEvents = starOpacity > 0.1 ? 'auto' : 'none';
+        // Never let star screen block WorkPage clicks
+        starScreenRef.current.style.pointerEvents = 'none';
       }
       if (paraRef.current) {
         paraRef.current.style.opacity = String(overlayOpacity);
@@ -674,6 +868,7 @@ export default function DataTree() {
       }
       if (workPillRef.current) {
         workPillRef.current.style.opacity = String(overlayOpacity);
+        workPillRef.current.style.pointerEvents = overlayOpacity > 0.1 ? 'auto' : 'none';
       }
       // Downward arrow
       const arrowEl = container.querySelector('.pill-arrow') as HTMLElement;
@@ -687,9 +882,11 @@ export default function DataTree() {
       }
       if (navRef.current) {
         navRef.current.style.opacity = String(overlayOpacity);
+        navRef.current.style.pointerEvents = overlayOpacity > 0.1 ? 'auto' : 'none';
       }
       if (densityPillRef.current) {
         densityPillRef.current.style.opacity = String(overlayOpacity);
+        densityPillRef.current.style.pointerEvents = overlayOpacity > 0.1 ? 'auto' : 'none';
       }
 
       // ── Color logic: smooth lerp background + particle tint on zone hover ──
@@ -885,10 +1082,13 @@ export default function DataTree() {
       }
 
       // WorkPage visibility — show when disintegration is well underway
-      const shouldShow = progress >= 1.3;
-      if (shouldShow !== workVisibleRef.current) {
-        workVisibleRef.current = shouldShow;
-        setWorkVisible(shouldShow);
+      // Work page visibility
+      if (progress >= 1.3 && !workVisibleRef.current) {
+        workVisibleRef.current = true;
+        setWorkVisible(true);
+      } else if (progress < 1.3 && workVisibleRef.current) {
+        workVisibleRef.current = false;
+        setWorkVisible(false);
       }
     }
 
@@ -952,7 +1152,14 @@ export default function DataTree() {
 
     // ── RAF loop ─────────────────────────────────────────────────────────────
 
-    function frame() {
+    let lastFrameTime = 0;
+    function frame(timestamp: number) {
+      const delta = timestamp - lastFrameTime;
+      if (delta < 16) { // cap at ~60fps
+        rafId = requestAnimationFrame(frame);
+        return;
+      }
+      lastFrameTime = timestamp;
       time += 0.016;
 
       // Sync external progress overrides (WORK pill, HOME pill)
@@ -979,6 +1186,30 @@ export default function DataTree() {
 
       // CPU work
       updateCPU();
+
+      // Bento scatter lerp — smoothly move scatter positions toward target
+      if (bentoTargetRef.current && pb) {
+        const target = bentoTargetRef.current;
+        const lerpSpeed = 0.06; // ~60 frames to converge (0.06 per frame)
+        let maxDelta = 0;
+        for (let i = 0; i < pb.count * 2; i++) {
+          const delta = target[i] - pb.scatterBuf[i];
+          pb.scatterBuf[i] += delta * lerpSpeed;
+          maxDelta = Math.max(maxDelta, Math.abs(delta));
+        }
+        const scatterAttr = pb.geometry.getAttribute('aScatterPos') as THREE.BufferAttribute;
+        scatterAttr.needsUpdate = true;
+        // Stop lerping when close enough
+        if (maxDelta < 0.5) {
+          pb.scatterBuf.set(target);
+          scatterAttr.needsUpdate = true;
+          // If returning to scatter (bentoMode is false), clear refs
+          if (!bentoModeRef.current) {
+            bentoTargetRef.current = null;
+            bentoSavedScatterRef.current = null;
+          }
+        }
+      }
 
       // Uniforms
       particleMat.uniforms.uProgress.value = progress;
@@ -1014,6 +1245,7 @@ export default function DataTree() {
       container.removeEventListener("pointerup", onPointerUp);
       container.removeEventListener("pointerleave", onPointerLeave);
       window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('blur', onWindowBlur);
       if (glitchInterval) clearInterval(glitchInterval);
       if (glitchTimeout) clearTimeout(glitchTimeout);
       clearTimeout(glitchStartTimeout);
@@ -1044,7 +1276,7 @@ export default function DataTree() {
         height: "100vh",
         background: '#F9F8F4',
         overflow: "hidden",
-        touchAction: "none",
+        touchAction: "pan-y",
         userSelect: "none",
         cursor: "default",
       }}
@@ -1138,13 +1370,14 @@ export default function DataTree() {
             letterSpacing: '-0.05em',
             padding: 'clamp(12px, 1vw, 16px) clamp(36px, 3.5vw, 68px)',
             borderRadius: 27,
-            cursor: 'default',
+            cursor: 'pointer',
+            pointerEvents: 'auto',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
           }}
         >
-          <TextScramble trigger={homepageRevealed} duration={0.6} speed={0.04}>WORK</TextScramble>
+          <PillButton>WORK</PillButton>
         </div>
       </div>
 
@@ -1271,11 +1504,11 @@ export default function DataTree() {
           textTransform: 'uppercase',
           whiteSpace: 'nowrap',
           overflow: 'hidden',
-          pointerEvents: 'none',
+          cursor: 'pointer',
         }}
       >
-        <TextScramble trigger={homepageRevealed} duration={0.6} speed={0.04}>ABOUT</TextScramble>
-        <TextScramble trigger={homepageRevealed} duration={0.6} speed={0.04}>CONTACT</TextScramble>
+        <PillButton onClick={() => window.open('mailto:ashutoshbhardwaj.design@gmail.com', '_self')}>ABOUT</PillButton>
+        <PillButton onClick={() => window.open('mailto:ashutoshbhardwaj.design@gmail.com', '_self')}>CONTACT</PillButton>
       </div>
 
       {/* Density pill bottom-right — Figma 8060:29309 */}
@@ -1301,7 +1534,7 @@ export default function DataTree() {
           pointerEvents: 'none',
         }}
       >
-        <TextScramble trigger={homepageRevealed} duration={0.6} speed={0.04}>{'\u2318 + / \u2318 \u2212  [DENSITY]'}</TextScramble>
+        <PillButton>{'\u2318 + / \u2318 \u2212  [DENSITY]'}</PillButton>
       </div>
 
       {/* Downward double-chevron arrow — centered, aligned with pills */}
@@ -1455,7 +1688,23 @@ export default function DataTree() {
         visible={workVisible}
         onHoverZone={(key) => showWatermark(key, key)}
         onLeaveZone={() => hideWatermark()}
-        onHomePill={() => { targetProgressRef.current = 0.001; }}
+        onHomePill={() => { resetProgressRef.current(); window.scrollTo(0, 0); }}
+        onLogoHover={(key) => {
+          if (!logoLockedRef.current) {
+            setLogoModeRef.current(key === 'CREPDOGCREW');
+          }
+        }}
+        onLogoLock={(key) => {
+          logoLockedRef.current = key;
+          setLogoModeRef.current(key === 'CREPDOGCREW');
+        }}
+        onPillClick={(key) => {
+          // Future: navigate to case study
+        }}
+        onBentoHover={(key) => {
+          if (key) setBentoModeRef.current(true, key);
+          else setBentoModeRef.current(false, '');
+        }}
       />
     </div>
   );
