@@ -89,3 +89,84 @@ export const ZONE_COLORS: Record<string, ZoneColor> = {
   'BRAND':          hexToZone('#43BBF8', 'skill'),
   'GLITCH':         hexToZone('#F00000', 'skill'),
 };
+
+// ── Company projects (card formation data) ──────────────────────────────────
+
+export interface ProjectEntry {
+  title: string; year: string; tag: string; image: string;
+}
+
+export const COMPANY_PROJECTS: Record<string, ProjectEntry[]> = {
+  'STABLE MONEY': [
+    { title: 'PROJECT 1', year: '2025', tag: 'PRODUCT · BRAND', image: '/projects/stable-money-1.jpg' },
+    { title: 'PROJECT 2', year: '2025', tag: 'MOTION · BRAND',  image: '/projects/stable-money-2.jpg' },
+    { title: 'PROJECT 3', year: '2024', tag: 'SYSTEMS · TOOL',  image: '/projects/stable-money-3.jpg' },
+    { title: 'PROJECT 4', year: '2024', tag: 'PRODUCT · DATA',  image: '/projects/stable-money-4.jpg' },
+  ],
+  'DAILYOBJECTS': [
+    { title: 'PROJECT 1', year: '2023', tag: 'BRAND IDENTITY', image: '/projects/dailyobjects-1.jpg' },
+    { title: 'PROJECT 2', year: '2023', tag: 'PRODUCT UI',     image: '/projects/dailyobjects-2.jpg' },
+    { title: 'PROJECT 3', year: '2022', tag: 'MOTION · 3D',    image: '/projects/dailyobjects-3.jpg' },
+    { title: 'PROJECT 4', year: '2023', tag: 'PACKAGING',      image: '/projects/dailyobjects-4.jpg' },
+  ],
+  'CREPDOGCREW': [
+    { title: 'PROJECT 1', year: '2022', tag: 'BRAND · DROPS',   image: '/projects/crepdogcrew-1.jpg' },
+    { title: 'PROJECT 2', year: '2022', tag: 'SOCIAL · MOTION', image: '/projects/crepdogcrew-2.jpg' },
+    { title: 'PROJECT 3', year: '2021', tag: 'CAMPAIGN',        image: '/projects/crepdogcrew-3.jpg' },
+    { title: 'PROJECT 4', year: '2021', tag: 'EDITORIAL',       image: '/projects/crepdogcrew-4.jpg' },
+  ],
+  'PROBO': [
+    { title: 'PROJECT 1', year: '2024', tag: 'PRODUCT UI', image: '/projects/probo-1.jpg' },
+    { title: 'PROJECT 2', year: '2023', tag: 'SYSTEMS',    image: '/projects/probo-2.jpg' },
+    { title: 'PROJECT 3', year: '2023', tag: 'MOTION',     image: '/projects/probo-3.jpg' },
+    { title: 'PROJECT 4', year: '2023', tag: 'BRAND',      image: '/projects/probo-4.jpg' },
+  ],
+  'OTHER': [
+    { title: 'PROJECT 1', year: '2023', tag: 'FREELANCE · BRAND', image: '/projects/other-1.jpg' },
+    { title: 'PROJECT 2', year: '2022', tag: 'PERSONAL',          image: '/projects/other-2.jpg' },
+    { title: 'PROJECT 3', year: '2022', tag: 'UI · UX',           image: '/projects/other-3.jpg' },
+    { title: 'PROJECT 4', year: '2021', tag: 'CONCEPT',           image: '/projects/other-4.jpg' },
+  ],
+  // ── Skill projects ──
+  'MOTION DESIGN': [
+    { title: 'PROJECT 1', year: '2024', tag: 'ANIMATION',      image: '/projects/motion-design-1.jpg' },
+    { title: 'PROJECT 2', year: '2023', tag: 'INTERACTION',    image: '/projects/motion-design-2.jpg' },
+    { title: 'PROJECT 3', year: '2023', tag: 'TRANSITIONS',   image: '/projects/motion-design-3.jpg' },
+    { title: 'PROJECT 4', year: '2022', tag: 'MICRO · MOTION', image: '/projects/motion-design-4.jpg' },
+  ],
+  'SYSTEMS': [
+    { title: 'PROJECT 1', year: '2024', tag: 'TOKENS · SCALE',  image: '/projects/systems-1.jpg' },
+    { title: 'PROJECT 2', year: '2023', tag: 'COMPONENTS',     image: '/projects/systems-2.jpg' },
+    { title: 'PROJECT 3', year: '2023', tag: 'DOCUMENTATION',  image: '/projects/systems-3.jpg' },
+    { title: 'PROJECT 4', year: '2022', tag: 'GOVERNANCE',     image: '/projects/systems-4.jpg' },
+  ],
+  '3D': [
+    { title: 'PROJECT 1', year: '2024', tag: 'ENVIRONMENT',  image: '/projects/3d-1.jpg' },
+    { title: 'PROJECT 2', year: '2023', tag: 'OBJECT',       image: '/projects/3d-2.jpg' },
+    { title: 'PROJECT 3', year: '2023', tag: 'SPATIAL',      image: '/projects/3d-3.jpg' },
+    { title: 'PROJECT 4', year: '2022', tag: 'RENDER',       image: '/projects/3d-4.jpg' },
+  ],
+  'BRAND': [
+    { title: 'PROJECT 1', year: '2024', tag: 'IDENTITY',     image: '/projects/brand-1.jpg' },
+    { title: 'PROJECT 2', year: '2023', tag: 'MARK · LOGO',  image: '/projects/brand-2.jpg' },
+    { title: 'PROJECT 3', year: '2023', tag: 'GUIDELINES',   image: '/projects/brand-3.jpg' },
+    { title: 'PROJECT 4', year: '2022', tag: 'SYSTEM',       image: '/projects/brand-4.jpg' },
+  ],
+  'GLITCH': [
+    { title: 'PROJECT 1', year: '2024', tag: 'DISTORTION',   image: '/projects/glitch-1.jpg' },
+    { title: 'PROJECT 2', year: '2023', tag: 'NOISE · DATA', image: '/projects/glitch-2.jpg' },
+    { title: 'PROJECT 3', year: '2022', tag: 'AESTHETIC',    image: '/projects/glitch-3.jpg' },
+    { title: 'PROJECT 4', year: '2022', tag: 'EXPERIMENT',   image: '/projects/glitch-4.jpg' },
+  ],
+};
+
+// Bento grid layout per company — distinct structure for each
+export const CARD_BENTO_LAYOUTS: Record<string, {
+  areas: string; cols: string; rows: number; cardAreas: string[];
+}> = {
+  'STABLE MONEY': { areas: '"a b" "c d"', cols: '1fr 1fr', rows: 2, cardAreas: ['a','b','c','d'] },
+  'DAILYOBJECTS':  { areas: '"a b" "c d"', cols: '1fr 1fr', rows: 2, cardAreas: ['a','b','c','d'] },
+  'CREPDOGCREW':   { areas: '"a b" "c d"', cols: '1fr 1fr', rows: 2, cardAreas: ['a','b','c','d'] },
+  'PROBO':         { areas: '"a b" "c d"', cols: '1fr 1fr', rows: 2, cardAreas: ['a','b','c','d'] },
+  'OTHER':         { areas: '"a b" "c d"', cols: '1fr 1fr', rows: 2, cardAreas: ['a','b','c','d'] },
+};

@@ -27,6 +27,8 @@ import {
   BG_COLOR,
   COLOR_LERP_SPEED,
   ZONE_COLORS,
+  COMPANY_PROJECTS,
+  CARD_BENTO_LAYOUTS,
 } from "./data-tree/constants";
 import type { RawPoint, ParticleCPU } from "./data-tree/types";
 import { generateSDFAtlas } from "./data-tree/sdf-atlas";
@@ -40,7 +42,7 @@ import {
   createLineMaterial,
   type ParticleBuffers,
 } from "./data-tree/particle-system";
-import { getCDCScatterPositions, getBentoPoints } from "./data-tree/logo-sampler";
+import { preloadCompanyLuminance, getCachedLuminance } from "./data-tree/luminance-sampler";
 
 // ── PillButton ──────────────────────────────────────────────────────────────
 
@@ -147,6 +149,92 @@ function assignDigit(darkness: number): number {
   return 20 + (r % 16);                                 // U–9 (indices 20–35)
 }
 
+// ── Card target computation ──────────────────────────────────────────────────
+
+const PARTICLES_PER_CARD = 1088;  // 34 × 32
+const CARD_COLS = 34;
+const CARD_ROWS = 32;
+
+export interface CardRect { x: number; y: number; w: number; h: number }
+
+function computeCardTargets(
+  W: number,
+  H: number,
+  cardPixelWidthRef: React.MutableRefObject<number>,
+  cardPixelHeightRef: React.MutableRefObject<number>,
+  cardRectsRef: React.MutableRefObject<CardRect[]>,
+): Map<string, Float32Array> {
+  const result = new Map<string, Float32Array>();
+  const d = FOV / (FOV + CAMERA_Z_OFFSET);
+  const SCENE_SCALE = Math.min(W, H) * SCENE_SCALE_FACTOR;
+
+  // Card area proportions (from Figma at 1440×900)
+  const cardAreaLeft   = W * 0.354;
+  const cardAreaRight  = W * 0.876;
+  const cardAreaTop    = H * 0.176;
+  const cardAreaBottom = H * 0.832;
+  const cardAreaW = cardAreaRight - cardAreaLeft;
+  const cardAreaH = cardAreaBottom - cardAreaTop;
+
+  // UNIFORM gap — same horizontal and vertical (~17px at 1440)
+  const gap = W * 0.012;
+
+  // Card dimensions with 4:3 aspect ratio
+  let cardW = (cardAreaW - gap) / 2;
+  let cardH = cardW / 1.34;
+
+  // If cards overflow vertically, scale down
+  if (cardH * 2 + gap > cardAreaH) {
+    cardH = (cardAreaH - gap) / 2;
+    cardW = cardH * 1.34;
+  }
+
+  // Center the 2×2 grid within the card area
+  const totalGridW = cardW * 2 + gap;
+  const totalGridH = cardH * 2 + gap;
+  const offsetX = cardAreaLeft + (cardAreaW - totalGridW) / 2;
+  const offsetY = cardAreaTop + (cardAreaH - totalGridH) / 2;
+
+  // 4 card positions — always the same
+  const cardRects: CardRect[] = [
+    { x: offsetX,              y: offsetY,              w: cardW, h: cardH }, // top-left
+    { x: offsetX + cardW + gap, y: offsetY,              w: cardW, h: cardH }, // top-right
+    { x: offsetX,              y: offsetY + cardH + gap, w: cardW, h: cardH }, // bottom-left
+    { x: offsetX + cardW + gap, y: offsetY + cardH + gap, w: cardW, h: cardH }, // bottom-right
+  ];
+
+  // Store card pixel dimensions for font size calculation + overlay positioning
+  cardPixelWidthRef.current = cardW;
+  cardPixelHeightRef.current = cardH;
+  cardRectsRef.current = cardRects;
+
+  const padding = 13 * (W / 1440);
+  const cellW = cardW / CARD_COLS;
+  const cellH = cardH / CARD_ROWS;
+
+  for (const [company, projects] of Object.entries(COMPANY_PROJECTS)) {
+    const numCards = projects.length;
+    const buf = new Float32Array(numCards * PARTICLES_PER_CARD * 3);
+
+    for (let ci = 0; ci < numCards && ci < 4; ci++) {
+      const rect = cardRects[ci];
+      for (let row = 0; row < CARD_ROWS; row++) {
+        for (let col = 0; col < CARD_COLS; col++) {
+          const pi = ci * PARTICLES_PER_CARD + row * CARD_COLS + col;
+          const screenX = rect.x + padding + (col + 0.5) * cellW;
+          const screenY = rect.y + (row + 0.5) * cellH;
+          buf[pi * 3]     = (screenX - W * 0.58) / (SCENE_SCALE * d);
+          buf[pi * 3 + 1] = (H * 0.85 - screenY) / (SCENE_SCALE * d * 1.15);
+          buf[pi * 3 + 2] = 0;
+        }
+      }
+    }
+    result.set(company, buf);
+  }
+
+  return result;
+}
+
 // ── Ambient copy ─────────────────────────────────────────────────────────────
 
 const AMBIENT_COPY: Record<string, string> = {
@@ -199,18 +287,22 @@ export default function DataTree() {
   const homepageRevealedRef = useRef(false);
   const workPageRef = useRef<HTMLDivElement>(null);
 
-  // Logo morph state (legacy CDC)
-  const logoModeRef = useRef(false);
-  const savedScatterRef = useRef<Float32Array | null>(null);
-  const setLogoModeRef = useRef<(active: boolean) => void>(() => {});
-  const logoLockedRef = useRef<string | null>(null);
+  // Card formation state (particle grid cards on pill hover)
+  const hoveredCardRef = useRef<string | null>(null);
+  const cardFormingRef = useRef(false);
+  const cardFormProgressRef = useRef(0);
+  const activeCardCompanyRef = useRef<string | null>(null);
+  const cardTargetsRef = useRef<Map<string, Float32Array>>(new Map());
+  const savedWorldPosRef = useRef<Float32Array | null>(null);
+  const savedFontSizesRef = useRef<Float32Array | null>(null);
+  const savedOpacityRef = useRef<Float32Array | null>(null);
+  const cardPixelWidthRef = useRef(0);
+  const cardPixelHeightRef = useRef(0);
+  const cardRectsRef = useRef<CardRect[]>([]);
+  const cardLuminanceRef = useRef<Float32Array[]>([]);  // per-card luminance grids
 
-  // Bento thumbnail formation state
-  const bentoModeRef = useRef(false);
-  const bentoSavedScatterRef = useRef<Float32Array | null>(null);
-  const bentoTargetRef = useRef<Float32Array | null>(null); // target positions to lerp toward
-  const bentoSavedZRef = useRef<Float32Array | null>(null); // saved Z positions
-  const setBentoModeRef = useRef<(active: boolean, key: string) => void>(() => {});
+  // Card positions state for WorkPage overlays
+  const [cardPositions, setCardPositions] = useState<CardRect[]>([]);
 
   // ── Color state (lerped in render loop) ──────────────────────────────────
   const colorStateRef = useRef({
@@ -358,12 +450,14 @@ export default function DataTree() {
       particleMat.uniforms.uDPR.value = physicalDPR;
       lineMat.uniforms.uResolution.value.set(W, H);
 
-      // Redistribute scatter positions
+      // Redistribute scatter positions & recompute card targets
       if (pb) {
         const scatterAttr = pb.geometry.getAttribute(
           "aScatterPos"
         ) as THREE.BufferAttribute;
         redistributeScatter(pb.scatterBuf, scatterAttr, W, H);
+        cardTargetsRef.current = computeCardTargets(W, H, cardPixelWidthRef, cardPixelHeightRef, cardRectsRef);
+        setCardPositions([...cardRectsRef.current]);
       }
     }
 
@@ -409,88 +503,10 @@ export default function DataTree() {
       lineMat.uniforms.uResolution.value.set(W, H);
       const scatterAttr = pb.geometry.getAttribute('aScatterPos') as THREE.BufferAttribute;
       redistributeScatter(pb.scatterBuf, scatterAttr, W, H);
+      // Compute card formation targets
+      cardTargetsRef.current = computeCardTargets(W, H, cardPixelWidthRef, cardPixelHeightRef, cardRectsRef);
+      setCardPositions([...cardRectsRef.current]);
     }
-
-    // ── Logo morph function ────────────────────────────────────────────────
-    setLogoModeRef.current = (active: boolean) => {
-      if (!pb) return;
-      const scatterAttr = pb.geometry.getAttribute('aScatterPos') as THREE.BufferAttribute;
-      const brownianAttr = pb.geometry.getAttribute('aBrownian') as THREE.BufferAttribute;
-      if (active && !logoModeRef.current) {
-        // Save current scatter positions
-        savedScatterRef.current = new Float32Array(pb.scatterBuf);
-        // Get logo positions and copy into scatterBuf
-        const logoPositions = getCDCScatterPositions(pb.count, W, H);
-        pb.scatterBuf.set(logoPositions);
-        scatterAttr.needsUpdate = true;
-        // Zero out brownian drift so particles spring cleanly to logo positions
-        pb.brownianBuf.fill(0);
-        brownianAttr.needsUpdate = true;
-        // Reset per-particle brownian velocities
-        for (let i = 0; i < pb.count; i++) {
-          pb.cpuParticles[i].bvx = 0;
-          pb.cpuParticles[i].bvy = 0;
-        }
-        logoModeRef.current = true;
-      } else if (!active && logoModeRef.current) {
-        // Restore saved scatter positions
-        if (savedScatterRef.current) {
-          pb.scatterBuf.set(savedScatterRef.current);
-          scatterAttr.needsUpdate = true;
-        }
-        logoModeRef.current = false;
-      }
-    };
-
-    // ── Bento thumbnail formation ─────────────────────────────────────────────
-    setBentoModeRef.current = (active: boolean, key: string) => {
-      if (!pb) return;
-
-      if (active && !bentoModeRef.current) {
-        // Save original scatter if not already saved
-        if (!bentoSavedScatterRef.current) {
-          bentoSavedScatterRef.current = new Float32Array(pb.scatterBuf);
-        }
-        // Set bento target — lerp will happen in RAF loop
-        bentoTargetRef.current = getBentoPoints(key, pb.count, W, H);
-        // Zero brownian so lerp is clean
-        pb.brownianBuf.fill(0);
-        const brownianAttr = pb.geometry.getAttribute('aBrownian') as THREE.BufferAttribute;
-        brownianAttr.needsUpdate = true;
-        for (let i = 0; i < pb.count; i++) {
-          pb.cpuParticles[i].bvx = 0;
-          pb.cpuParticles[i].bvy = 0;
-        }
-        // Flatten Z to zero — removes 3D depth spread
-        const posArr = pb.geometry.getAttribute('position').array as Float32Array;
-        bentoSavedZRef.current = new Float32Array(pb.count);
-        for (let i = 0; i < pb.count; i++) {
-          bentoSavedZRef.current[i] = posArr[i * 3 + 2];
-          posArr[i * 3 + 2] = 0;
-        }
-        (pb.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
-        // Increase particle size for denser fill
-        particleMat.uniforms.uDensityScale.value = 5.0;
-        bentoModeRef.current = true;
-      } else if (!active && bentoModeRef.current) {
-        // Set target back to saved scatter — lerp will animate back
-        if (bentoSavedScatterRef.current) {
-          bentoTargetRef.current = new Float32Array(bentoSavedScatterRef.current);
-        }
-        // Restore Z depth
-        if (bentoSavedZRef.current) {
-          const posArr = pb.geometry.getAttribute('position').array as Float32Array;
-          for (let i = 0; i < pb.count; i++) {
-            posArr[i * 3 + 2] = bentoSavedZRef.current[i];
-          }
-          (pb.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
-          bentoSavedZRef.current = null;
-        }
-        // Restore original density
-        particleMat.uniforms.uDensityScale.value = densityScale;
-        bentoModeRef.current = false;
-      }
-    };
 
     // ── Progress reset (for HOME pill) ──────────────────────────────────────
     resetProgressRef.current = () => {
@@ -666,7 +682,7 @@ export default function DataTree() {
         // Brownian motion — active in scatter AND disintegration, suppressed in logo mode
         {
           const disintActive = progress > 0.9;
-          const inFormationMode = logoModeRef.current || bentoModeRef.current;
+          const inFormationMode = cardFormingRef.current;
           const brownianScale = inFormationMode ? 0 : (p.ep < 0.98 ? 1.0 : disintActive ? 0.15 : 0);
           if (brownianScale > 0) {
             p.bvx += (Math.random() - 0.5) * 0.3 * brownianScale;
@@ -721,12 +737,20 @@ export default function DataTree() {
             }
           }
         }
-        pb.opacityBuf[i] = p.fadeOpacity;
+        if (!cardFormingRef.current) {
+          pb.opacityBuf[i] = p.fadeOpacity;
+        }
       }
 
       // Turbulence physics
       const uScale = Math.min(W / 1920, H / 1080);
       updateTurbulencePhysics(cpu, mouseX, mouseY, time, pb.displacementBuf, uScale);
+
+      // Zero displacement and brownian when cards are forming
+      if (cardFormingRef.current) {
+        pb.displacementBuf.fill(0);
+        pb.brownianBuf.fill(0);
+      }
 
       // Mark dynamic attributes for upload
       (pb.geometry.getAttribute("aBrownian") as THREE.BufferAttribute).needsUpdate = true;
@@ -738,7 +762,7 @@ export default function DataTree() {
     // ── Smart proximity lines (1 connection per particle, no clusters) ────────
 
     function updateSmartLines() {
-      if (!pb || progress < 0.7 || mouseX < -100) {
+      if (!pb || progress < 0.7 || mouseX < -100 || cardFormingRef.current) {
         lineGeometry.setDrawRange(0, 0);
         return;
       }
@@ -1126,14 +1150,18 @@ export default function DataTree() {
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (!e.ctrlKey && !e.metaKey) return;
-      if (e.key === '=' || e.key === '+') {
+      // Always prevent browser zoom for +/- keys
+      if (e.key === '=' || e.key === '+' || e.key === '-') {
         e.preventDefault();
+      }
+      // Skip density changes during card formation
+      if (cardFormingRef.current) return;
+      if (e.key === '=' || e.key === '+') {
         densityScale = Math.min(densityScale + 0.15, 2.5);
         particleMat.uniforms.uDensityScale.value = densityScale;
         updateDensityHint();
       }
       if (e.key === '-') {
-        e.preventDefault();
         densityScale = Math.max(densityScale - 0.15, 0.3);
         particleMat.uniforms.uDensityScale.value = densityScale;
         updateDensityHint();
@@ -1187,37 +1215,133 @@ export default function DataTree() {
       // CPU work
       updateCPU();
 
-      // Bento scatter lerp — smoothly move scatter positions toward target
-      if (bentoTargetRef.current && pb) {
-        const target = bentoTargetRef.current;
-        const lerpSpeed = 0.06; // ~60 frames to converge (0.06 per frame)
-        let maxDelta = 0;
-        for (let i = 0; i < pb.count * 2; i++) {
-          const delta = target[i] - pb.scatterBuf[i];
-          pb.scatterBuf[i] += delta * lerpSpeed;
-          maxDelta = Math.max(maxDelta, Math.abs(delta));
+      // ── Card formation state machine ──────────────────────────────────────
+      if (pb) {
+        const posArr = pb.geometry.getAttribute('position').array as Float32Array;
+        const fontArr = pb.geometry.getAttribute('aFontSize').array as Float32Array;
+        const wantCompany = (progress >= 1.3) ? hoveredCardRef.current : null;
+        const activeCompany = activeCardCompanyRef.current;
+        const companyChanged = wantCompany !== activeCompany;
+
+        // RESTORE: if company changed or hover ended, snap everything back
+        if (companyChanged && cardFormingRef.current && savedWorldPosRef.current) {
+          const saved = savedWorldPosRef.current;
+          const savedFonts = savedFontSizesRef.current;
+          const savedOpac = savedOpacityRef.current;
+          posArr.set(saved);
+          if (savedFonts) fontArr.set(savedFonts);
+          if (savedOpac) pb.opacityBuf.set(savedOpac);
+          (pb.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
+          (pb.geometry.getAttribute('aFontSize') as THREE.BufferAttribute).needsUpdate = true;
+          (pb.geometry.getAttribute('aFadeOpacity') as THREE.BufferAttribute).needsUpdate = true;
+          savedWorldPosRef.current = null;
+          savedFontSizesRef.current = null;
+          savedOpacityRef.current = null;
+          cardFormingRef.current = false;
+          cardFormProgressRef.current = 0;
+          activeCardCompanyRef.current = null;
         }
-        const scatterAttr = pb.geometry.getAttribute('aScatterPos') as THREE.BufferAttribute;
-        scatterAttr.needsUpdate = true;
-        // Stop lerping when close enough
-        if (maxDelta < 0.5) {
-          pb.scatterBuf.set(target);
-          scatterAttr.needsUpdate = true;
-          // If returning to scatter (bentoMode is false), clear refs
-          if (!bentoModeRef.current) {
-            bentoTargetRef.current = null;
-            bentoSavedScatterRef.current = null;
+
+        // FORM: start new formation if we want a company and aren't forming it
+        if (wantCompany && !cardFormingRef.current) {
+          const targets = cardTargetsRef.current.get(wantCompany);
+          const numCards = COMPANY_PROJECTS[wantCompany]?.length ?? 0;
+          const cardPtCount = numCards * PARTICLES_PER_CARD;
+          if (targets) {
+            savedWorldPosRef.current = new Float32Array(posArr);
+            savedFontSizesRef.current = new Float32Array(fontArr);
+            savedOpacityRef.current = new Float32Array(pb.opacityBuf);
+            cardFormingRef.current = true;
+            cardFormProgressRef.current = 1.0;
+            activeCardCompanyRef.current = wantCompany;
+
+            // Preload luminance grids for this company's project images
+            const projects = COMPANY_PROJECTS[wantCompany] ?? [];
+            preloadCompanyLuminance(projects).then(grids => {
+              cardLuminanceRef.current = grids;
+            });
+
+            // Instantly hide non-card particles
+            for (let i = cardPtCount; i < pb.count; i++) {
+              posArr[i * 3 + 2] = 2000;
+              fontArr[i] = 0;
+              pb.opacityBuf[i] = 0;
+            }
+            (pb.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
+            (pb.geometry.getAttribute('aFontSize') as THREE.BufferAttribute).needsUpdate = true;
+            (pb.geometry.getAttribute('aFadeOpacity') as THREE.BufferAttribute).needsUpdate = true;
           }
+        }
+
+        // ANIMATE: lerp card particles toward targets
+        if (cardFormingRef.current && activeCardCompanyRef.current) {
+          const company = activeCardCompanyRef.current;
+          const targets = cardTargetsRef.current.get(company);
+          const numCards = COMPANY_PROJECTS[company]?.length ?? 0;
+          const cardPtCount = numCards * PARTICLES_PER_CARD;
+
+          if (targets) {
+            // Font size derived from card width, NOT from density control
+            const cardCellW = cardPixelWidthRef.current / CARD_COLS;
+            const perspD = FOV / (FOV + CAMERA_Z_OFFSET);
+            const targetFontSize = (cardCellW * 1.45) / perspD;
+
+            const lumGrids = cardLuminanceRef.current;
+            for (let i = 0; i < cardPtCount; i++) {
+              const i3 = i * 3;
+              posArr[i3]     += (targets[i3]     - posArr[i3])     * 0.07;
+              posArr[i3 + 1] += (targets[i3 + 1] - posArr[i3 + 1]) * 0.07;
+              posArr[i3 + 2] += (targets[i3 + 2] - posArr[i3 + 2]) * 0.07;
+              fontArr[i] += (targetFontSize - fontArr[i]) * 0.07;
+
+              // Luminance-driven opacity: sample the image brightness for this cell
+              const cardIdx = Math.floor(i / PARTICLES_PER_CARD);
+              const cellIdx = i % PARTICLES_PER_CARD; // 0..1087 → row*34+col
+              const lumGrid = lumGrids[cardIdx];
+              // Target opacity: luminance value (bright=visible, dark=faded)
+              // Minimum 0.08 so even dark areas have a faint presence
+              const targetOpacity = lumGrid
+                ? Math.max(0.08, lumGrid[cellIdx])
+                : 1.0; // fallback: full opacity if image not loaded yet
+              pb.opacityBuf[i] += (targetOpacity - pb.opacityBuf[i]) * 0.09;
+            }
+            // Keep non-card particles hidden
+            for (let i = cardPtCount; i < pb.count; i++) {
+              posArr[i * 3 + 2] = 2000;
+              fontArr[i] = 0;
+              pb.opacityBuf[i] = 0;
+            }
+            (pb.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
+            (pb.geometry.getAttribute('aFontSize') as THREE.BufferAttribute).needsUpdate = true;
+            (pb.geometry.getAttribute('aFadeOpacity') as THREE.BufferAttribute).needsUpdate = true;
+          }
+
+          // Pause auto-rotation
+          targetRotY -= AUTO_ROTATE_SPEED;
         }
       }
 
+      // Hide watermark during card formation
+      if (watermarkRef.current && (cardFormingRef.current || cardFormProgressRef.current > 0)) {
+        watermarkRef.current.style.opacity = '0';
+      }
+
+      // Lerp card formation progress
+      if (cardFormingRef.current) {
+        cardFormProgressRef.current = Math.min(1, cardFormProgressRef.current + 0.04);
+      } else {
+        cardFormProgressRef.current = Math.max(0, cardFormProgressRef.current - 0.06);
+      }
+      const cfp = cardFormProgressRef.current;
+
       // Uniforms
       particleMat.uniforms.uProgress.value = progress;
-      particleMat.uniforms.uRotY.value = rotY;
-      particleMat.uniforms.uRotX.value = rotX;
+      // When cards forming, lerp rotation toward 0 (front-facing)
+      particleMat.uniforms.uRotY.value = cfp > 0 ? rotY * (1 - cfp) : rotY;
+      particleMat.uniforms.uRotX.value = cfp > 0 ? rotX * (1 - cfp) : rotX;
       particleMat.uniforms.uTime.value = time;
       const disint = clamp((progress - 0.86) / 0.8, 0, 1);
-      particleMat.uniforms.uDisintegration.value = disint;
+      particleMat.uniforms.uDisintegration.value = cfp > 0 ? Math.max(0, disint - disint * cfp) : disint;
       if (progress >= 1.50) targetProgress = 1.50;
       lineMat.uniforms.uTime.value = time;
 
@@ -1689,22 +1813,8 @@ export default function DataTree() {
         onHoverZone={(key) => showWatermark(key, key)}
         onLeaveZone={() => hideWatermark()}
         onHomePill={() => { resetProgressRef.current(); window.scrollTo(0, 0); }}
-        onLogoHover={(key) => {
-          if (!logoLockedRef.current) {
-            setLogoModeRef.current(key === 'CREPDOGCREW');
-          }
-        }}
-        onLogoLock={(key) => {
-          logoLockedRef.current = key;
-          setLogoModeRef.current(key === 'CREPDOGCREW');
-        }}
-        onPillClick={(key) => {
-          // Future: navigate to case study
-        }}
-        onBentoHover={(key) => {
-          if (key) setBentoModeRef.current(true, key);
-          else setBentoModeRef.current(false, '');
-        }}
+        onPillHover={(c) => { hoveredCardRef.current = c; }}
+        cardRects={cardPositions}
       />
     </div>
   );

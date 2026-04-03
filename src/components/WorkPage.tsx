@@ -1,6 +1,8 @@
 'use client';
 import React, { useState, useEffect, useRef, forwardRef } from 'react';
 import TextScramble from './TextScramble';
+import { COMPANY_PROJECTS, ZONE_COLORS } from './data-tree/constants';
+import type { CardRect } from './DataTree';
 
 const PillReveal = ({ children, delay = 0 }: {
   children: React.ReactNode; delay?: number;
@@ -147,133 +149,79 @@ const PILL_STYLE: React.CSSProperties = {
   transition: 'opacity 0.3s ease',
 };
 
-// ── Bento Tetris fill rectangles ─────────────────────────────────────────────
-
-const BENTO_COLORS: Record<string, string[]> = {
-  'DAILYOBJECTS':   ['#1a1a1a', '#2d2d2d', '#0d0d0d'],
-  'CREPDOGCREW':    ['#0a6e08', '#0c8a0a', '#085c06'],
-  'PROBO':          ['#0800cc', '#0a00ff', '#0600aa'],
-  'STABLE MONEY':   ['#6644dd', '#7a55ff', '#5533cc'],
-  'OTHER':          ['#cc0000', '#ee0000', '#aa0000'],
-  'MOTION DESIGN':  ['#c23a1f', '#e04522', '#a03018'],
-  'SYSTEMS':        ['#c23a1f', '#e04522', '#a03018'],
-  '3D':             ['#cc7a00', '#ff9900', '#aa6600'],
-  'BRAND':          ['#2288cc', '#43bbf8', '#1166aa'],
-  'GLITCH':         ['#cc0000', '#f00000', '#aa0000'],
-};
-
-const BENTO_RECTS = [
-  { left: '28%', top: '10%',  width: '48%', height: '42%', fillFrom: 'bottom' as const, delay: 0 },
-  { left: '72%', top: '6%',   width: '20%', height: '55%', fillFrom: 'top' as const,    delay: 120 },
-  { left: '44%', top: '54%',  width: '30%', height: '28%', fillFrom: 'left' as const,   delay: 60 },
-];
-
-const TetrisRect = ({ rect, color, active, delay }: {
-  rect: typeof BENTO_RECTS[0]; color: string; active: boolean; delay: number;
-}) => {
-  const [filled, setFilled] = useState(false);
-
-  useEffect(() => {
-    if (active) {
-      const t = setTimeout(() => setFilled(true), delay);
-      return () => clearTimeout(t);
-    } else {
-      setFilled(false);
-    }
-  }, [active, delay]);
-
-  const clipPath = filled
-    ? 'inset(0% 0% 0% 0%)'
-    : rect.fillFrom === 'bottom' ? 'inset(100% 0% 0% 0%)'
-    : rect.fillFrom === 'top'    ? 'inset(0% 0% 100% 0%)'
-    : rect.fillFrom === 'left'   ? 'inset(0% 100% 0% 0%)'
-    : 'inset(0% 0% 0% 100%)';
-
-  return (
-    <div style={{
-      position: 'absolute',
-      left: rect.left, top: rect.top,
-      width: rect.width, height: rect.height,
-      background: color,
-      clipPath,
-      transition: filled
-        ? `clip-path 0.55s cubic-bezier(0.22, 1, 0.36, 1) ${delay}ms`
-        : 'clip-path 0.2s ease',
-      pointerEvents: 'none',
-      zIndex: 3,
-      boxShadow: 'inset 0 0 60px rgba(0,0,0,0.3)',
-    }} />
-  );
-};
-
-const BentoCards = ({ activeKey, active }: { activeKey: string | null; active: boolean }) => {
-  if (!activeKey) return null;
-  const colors = BENTO_COLORS[activeKey] ?? BENTO_COLORS['OTHER'];
-  return (
-    <>
-      {BENTO_RECTS.map((rect, i) => (
-        <TetrisRect key={i} rect={rect} color={colors[i]} active={active} delay={rect.delay} />
-      ))}
-    </>
-  );
-};
-
 interface WorkPageProps {
   visible: boolean;
   onHoverZone: (key: string) => void;
   onLeaveZone: () => void;
   onHomePill: () => void;
-  onLogoHover?: (key: string | null) => void;
-  onLogoLock?: (key: string | null) => void;
-  onPillClick?: (key: string) => void;
-  onBentoHover?: (key: string | null) => void;
+  onPillHover?: (company: string | null) => void;
+  cardRects?: CardRect[];
 }
 
-const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage({ visible, onHoverZone, onLeaveZone, onHomePill, onLogoHover, onLogoLock, onPillClick, onBentoHover }, ref) {
+const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage({ visible, onHoverZone, onLeaveZone, onHomePill, onPillHover, cardRects = [] }, ref) {
   const [mode, setMode] = useState<'exp'|'skill'>('exp');
   const [hovered, setHovered] = useState<string|null>(null);
-  const [lockedPill, setLockedPill] = useState<string|null>(null);
   const [ambientText, setAmbientText] = useState(DEFAULT_AMBIENT);
   const [ambientKey, setAmbientKey] = useState('default');
   const [scrambleTrigger, setScrambleTrigger] = useState(false);
-  const [bentoActive, setBentoActive] = useState(false);
-  const [bentoKey, setBentoKey] = useState<string | null>(null);
-  const bentoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (visible) setTimeout(() => setScrambleTrigger(true), 100);
     else setScrambleTrigger(false);
   }, [visible]);
 
+  // Delayed card overlay visibility (300ms after hover starts)
+  const [overlayVisible, setOverlayVisible] = useState(false);
+  const overlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (overlayTimerRef.current) clearTimeout(overlayTimerRef.current);
+    if (hovered && COMPANY_PROJECTS[hovered]) {
+      overlayTimerRef.current = setTimeout(() => setOverlayVisible(true), 300);
+    } else {
+      setOverlayVisible(false);
+    }
+    return () => { if (overlayTimerRef.current) clearTimeout(overlayTimerRef.current); };
+  }, [hovered, mode]);
+
+  const [lockedPill, setLockedPill] = useState<string | null>(null);
+
   const pills = mode === 'exp' ? EXP_PILLS : SKILL_PILLS;
 
-  const handleEnter = (pill: { key: string; label: string; desc: string }) => {
+  const activatePill = (pill: { key: string; label: string; desc: string }) => {
     setHovered(pill.key);
     setAmbientText(pill.desc);
     setAmbientKey(pill.key);
     onHoverZone(pill.key);
-    onLogoHover?.(pill.key);
-    onBentoHover?.(pill.key);
-    // Show bento cards with slight delay for particle spring start
-    if (bentoTimerRef.current) clearTimeout(bentoTimerRef.current);
-    setBentoKey(pill.key);
-    bentoTimerRef.current = setTimeout(() => setBentoActive(true), 150);
+    onPillHover?.(pill.key);
   };
 
-  const handleLeave = () => {
+  const deactivatePill = () => {
     setHovered(null);
     setAmbientText(DEFAULT_AMBIENT);
     setAmbientKey('default');
     onLeaveZone();
-    // If this pill is locked, keep logo formed
-    if (!lockedPill) {
-      onLogoHover?.(null);
+    onPillHover?.(null);
+  };
+
+  const handleEnter = (pill: { key: string; label: string; desc: string }) => {
+    if (lockedPill && lockedPill !== pill.key) return;
+    activatePill(pill);
+  };
+
+  const handleLeave = () => {
+    if (lockedPill) return;
+    deactivatePill();
+  };
+
+  const handlePillClick = (pill: { key: string; label: string; desc: string }) => {
+    if (lockedPill === pill.key) {
+      setLockedPill(null);
+      deactivatePill();
+    } else {
+      setLockedPill(pill.key);
+      activatePill(pill);
     }
-    onBentoHover?.(null);
-    // Collapse bento cards, then clear key
-    if (bentoTimerRef.current) clearTimeout(bentoTimerRef.current);
-    setBentoActive(false);
-    bentoTimerRef.current = setTimeout(() => setBentoKey(null), 400);
   };
 
   if (!visible) return null;
@@ -285,9 +233,6 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage({ v
       transition: 'opacity 0.6s ease',
       pointerEvents: 'auto',
     }}>
-      {/* Bento Tetris fill rectangles */}
-      <BentoCards activeKey={bentoKey} active={bentoActive} />
-
       {/* WORK title — top left */}
       <div style={{ position: 'absolute', top: 'clamp(24px, 3vh, 48px)', left: 'clamp(40px, 4vw, 80px)' }}>
         <div style={{
@@ -322,7 +267,7 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage({ v
           padding: 3, gap: 0,
         }}>
           {(['exp','skill'] as const).map(m => (
-            <div key={m} onClick={() => { setMode(m); onLeaveZone(); setBentoActive(false); setBentoKey(null); }} style={{
+            <div key={m} onClick={() => { setMode(m); setLockedPill(null); deactivatePill(); }} style={{
               background: mode === m ? '#fff' : 'transparent',
               color: mode === m ? '#000' : 'rgba(255,255,255,0.5)',
               borderRadius: 40,
@@ -348,6 +293,7 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage({ v
         }}>
         {pills.map((pill, i) => (
             <div key={pill.key}
+              onClick={() => handlePillClick(pill)}
               style={{
                 display: 'inline-flex',
                 alignItems: 'center',
@@ -363,46 +309,16 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage({ v
                 letterSpacing: '-0.02em',
                 textTransform: 'uppercase',
                 whiteSpace: 'nowrap',
+                boxShadow: lockedPill === pill.key ? '0 0 0 2px #fff' : 'none',
               }}
             >
-              {/* Main label */}
               <PillButton
                 onMouseEnter={() => handleEnter(pill)}
                 onMouseLeave={handleLeave}
-                onClick={() => onPillClick?.(pill.key)}
                 style={{ padding: '12px 28px' }}
               >
                 {pill.label}
               </PillButton>
-
-              {/* Dynamic Island blob — visible on hover */}
-              {hovered === pill.key && (
-                <div
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (lockedPill === pill.key) {
-                      setLockedPill(null);
-                      onLogoLock?.(null);
-                    } else {
-                      setLockedPill(pill.key);
-                      onLogoLock?.(pill.key);
-                    }
-                  }}
-                  style={{
-                    padding: '12px 16px 12px 0',
-                    color: 'rgba(255,255,255,0.6)',
-                    fontSize: 10,
-                    letterSpacing: '0.05em',
-                    whiteSpace: 'nowrap',
-                    borderLeft: '1px solid rgba(255,255,255,0.15)',
-                    paddingLeft: 12,
-                    cursor: 'pointer',
-                    userSelect: 'none',
-                  }}
-                >
-                  {lockedPill === pill.key ? 'RELEASE' : 'HOLD'}
-                </div>
-              )}
             </div>
         ))}
         </div>
@@ -429,6 +345,76 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage({ v
       <div style={{ position: 'absolute', bottom: 'clamp(24px, 3vh, 48px)', right: 'clamp(24px, 2.6vw, 48px)' }}>
         <div style={{ ...PILL_STYLE }}>{'\u2318 + / \u2318 \u2212  [DENSITY]'}</div>
       </div>
+
+      {/* Card label overlays — positioned over particle cards */}
+      {hovered && COMPANY_PROJECTS[hovered] && cardRects.length >= 4 && (() => {
+        const zc = ZONE_COLORS[hovered];
+        const gr = zc ? Math.round(zc.r * 255) : 0;
+        const gg = zc ? Math.round(zc.g * 255) : 0;
+        const gb = zc ? Math.round(zc.b * 255) : 0;
+        return (
+        <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 10 }}>
+          {cardRects.slice(0, 4).map((rect, i) => {
+            const project = COMPANY_PROJECTS[hovered]?.[i];
+            if (!project) return null;
+            const W = typeof window !== 'undefined' ? window.innerWidth : 1440;
+            const H = typeof window !== 'undefined' ? window.innerHeight : 900;
+            const pad = 13 * (W / 1440);
+            return (
+              <div key={i} style={{
+                position: 'absolute',
+                left: rect.x, top: rect.y,
+                width: rect.w, height: rect.h,
+                overflow: 'hidden',
+                opacity: overlayVisible ? 1 : 0,
+                transition: 'opacity 0.3s ease',
+              }}>
+                {/* Gradient */}
+                <div style={{
+                  position: 'absolute',
+                  left: 0, right: 0,
+                  bottom: 0,
+                  height: '55%',
+                  background: `linear-gradient(to top right, rgba(${gr},${gg},${gb},1) 0%, rgba(${gr},${gg},${gb},0) 100%)`,
+                  pointerEvents: 'none',
+                }} />
+                {/* Labels */}
+                <div style={{
+                  position: 'absolute',
+                  left: pad,
+                  bottom: rect.h * 0.084,
+                  fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif',
+                }}>
+                  <div style={{
+                    fontSize: 12 * (H / 900),
+                    fontWeight: 700,
+                    color: 'rgba(255,255,255,0.75)',
+                    marginBottom: 2,
+                  }}>
+                    {project.title}
+                  </div>
+                  <div style={{
+                    fontSize: 10.5 * (H / 900),
+                    fontWeight: 700,
+                    color: 'rgba(255,255,255,0.45)',
+                    marginBottom: 1,
+                  }}>
+                    {project.year} · {hovered}
+                  </div>
+                  <div style={{
+                    fontSize: 10.5 * (H / 900),
+                    fontWeight: 700,
+                    color: 'rgba(255,255,255,0.35)',
+                  }}>
+                    {project.tag}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        );
+      })()}
     </div>
   );
 });
