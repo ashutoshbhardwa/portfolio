@@ -290,15 +290,21 @@ export default function DataTree() {
   const cardFormingRef = useRef(false);
   const cardFormProgressRef = useRef(0);
   const activeCardCompanyRef = useRef<string | null>(null);
+  const cardDisintegratingRef = useRef(false);
+  const disintVelocitiesRef = useRef<Float32Array | null>(null);
+  const disintTickRef = useRef(0);
+  const disintCardCountRef = useRef(0);  // how many particles were in the card grid
   const cardTargetsRef = useRef<Map<string, Float32Array>>(new Map());
   const cardOpacityTargetsRef = useRef<Map<string, Float32Array>>(new Map());
   const savedWorldPosRef = useRef<Float32Array | null>(null);
   const savedFontSizesRef = useRef<Float32Array | null>(null);
   const savedOpacityRef = useRef<Float32Array | null>(null);
+  const particleMatRef = useRef<THREE.ShaderMaterial | null>(null);
   const cardPixelWidthRef = useRef(0);
   const cardPixelHeightRef = useRef(0);
   const cardRectsRef = useRef<CardRect[]>([]);
   const cardLuminanceRef = useRef<Float32Array[]>([]);  // per-card luminance grids
+  const particleBufRef = useRef<ParticleBuffers | null>(null);
 
   // Card positions state for WorkPage overlays
   const [cardPositions, setCardPositions] = useState<CardRect[]>([]);
@@ -401,6 +407,7 @@ export default function DataTree() {
     let time = 0;
     let dataLoaded = false;
     let rafId = 0;
+    let hasInitiallyFormed = false;  // true after first scatter→tree animation completes
     let densityScale = 1.0; // user-controlled font size multiplier
     let treeFormedAt: number | null = null;
     let scrollUnlocked = false;
@@ -426,6 +433,7 @@ export default function DataTree() {
 
     // Materials
     const particleMat = createParticleMaterial(atlas);
+    particleMatRef.current = particleMat;
     const lineMat = createLineMaterial();
 
     // Points (added to scene after data load)
@@ -505,6 +513,7 @@ export default function DataTree() {
 
     function initParticles(pts: RawPoint[]) {
       pb = buildParticleSystem(pts, W || 1280, H || 800);
+      particleBufRef.current = pb;
       points = new THREE.Points(pb.geometry, particleMat);
       scene.add(points);
       dataLoaded = true;
@@ -524,9 +533,15 @@ export default function DataTree() {
     }
 
     // ── Progress reset (for HOME pill) ──────────────────────────────────────
+    // Sets targetProgress only — progress lerps smoothly toward it (smooth scroll-up feel)
     resetProgressRef.current = () => {
-      targetProgress = 0;
-      progress = 0;
+      if (hasInitiallyFormed) {
+        targetProgress = 0.86;
+        // Don't snap progress — let it lerp for smooth animation
+      } else {
+        targetProgress = 0;
+        progress = 0;
+      }
     };
 
     // ── Resize observer ──────────────────────────────────────────────────────
@@ -548,11 +563,12 @@ export default function DataTree() {
     const onWheel = (e: WheelEvent) => {
       markInteracted();
 
-      // SCROLL UP — always works regardless of state
+      // SCROLL UP — after initial formation, clamp to formed tree (no scatter replay)
       if (e.deltaY < 0) {
+        const minProgress = hasInitiallyFormed ? 0.86 : 0;
         targetProgress = clamp(
           targetProgress + e.deltaY * SCROLL_SENSITIVITY,
-          0,
+          minProgress,
           1.7
         );
         return;
@@ -697,7 +713,7 @@ export default function DataTree() {
         // Brownian motion — active in scatter AND disintegration, suppressed in logo mode
         {
           const disintActive = progress > 0.9;
-          const inFormationMode = cardFormingRef.current;
+          const inFormationMode = cardFormingRef.current || cardDisintegratingRef.current;
           const brownianScale = inFormationMode ? 0 : (p.ep < 0.98 ? 1.0 : disintActive ? 0.15 : 0);
           if (brownianScale > 0) {
             p.bvx += (Math.random() - 0.5) * 0.3 * brownianScale;
@@ -752,7 +768,7 @@ export default function DataTree() {
             }
           }
         }
-        if (!cardFormingRef.current) {
+        if (!cardFormingRef.current && !cardDisintegratingRef.current) {
           pb.opacityBuf[i] = p.fadeOpacity;
         }
       }
@@ -761,8 +777,8 @@ export default function DataTree() {
       const uScale = Math.min(W / 1920, H / 1080);
       updateTurbulencePhysics(cpu, mouseX, mouseY, time, pb.displacementBuf, uScale);
 
-      // Zero displacement and brownian when cards are forming
-      if (cardFormingRef.current) {
+      // Zero displacement and brownian when cards are forming or disintegrating
+      if (cardFormingRef.current || cardDisintegratingRef.current) {
         pb.displacementBuf.fill(0);
         pb.brownianBuf.fill(0);
       }
@@ -777,7 +793,7 @@ export default function DataTree() {
     // ── Smart proximity lines (1 connection per particle, no clusters) ────────
 
     function updateSmartLines() {
-      if (!pb || progress < 0.7 || mouseX < -100 || cardFormingRef.current) {
+      if (!pb || progress < 0.7 || mouseX < -100 || cardFormingRef.current || cardDisintegratingRef.current) {
         lineGeometry.setDrawRange(0, 0);
         return;
       }
@@ -1181,8 +1197,8 @@ export default function DataTree() {
       if (e.key === '=' || e.key === '+' || e.key === '-') {
         e.preventDefault();
       }
-      // Skip density changes during card formation
-      if (cardFormingRef.current) return;
+      // Skip density changes during card formation/disintegration
+      if (cardFormingRef.current || cardDisintegratingRef.current) return;
       if (e.key === '=' || e.key === '+') {
         densityScale = Math.min(densityScale + 0.15, 2.5);
         particleMat.uniforms.uDensityScale.value = densityScale;
@@ -1229,6 +1245,7 @@ export default function DataTree() {
       // Detect when tree first fully forms
       if (progress >= 0.85 && treeFormedAt === null) {
         treeFormedAt = time;
+        hasInitiallyFormed = true;
       }
       // Unlock scroll-to-disintegrate after 5 seconds
       if (treeFormedAt !== null && !scrollUnlocked) {
@@ -1255,30 +1272,143 @@ export default function DataTree() {
         const wantCompany = (progress >= 1.3) ? hoveredCardRef.current : null;
         const activeCompany = activeCardCompanyRef.current;
         const companyChanged = wantCompany !== activeCompany;
+        const isDisintegrating = cardDisintegratingRef.current;
 
-        // RESTORE: if company changed or hover ended, snap everything back
-        if (companyChanged && cardFormingRef.current && savedWorldPosRef.current) {
+        // ── CARD TRANSITION: company changed or hover ended while card is active
+        if (companyChanged && cardFormingRef.current && savedWorldPosRef.current && !isDisintegrating) {
+          if (wantCompany) {
+            // PILL-TO-PILL SWITCH: instant restore + immediate new formation
+            const saved = savedWorldPosRef.current;
+            const savedFonts = savedFontSizesRef.current;
+            const savedOpac = savedOpacityRef.current;
+            posArr.set(saved);
+            if (savedFonts) fontArr.set(savedFonts);
+            if (savedOpac) pb.opacityBuf.set(savedOpac);
+            (pb.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
+            (pb.geometry.getAttribute('aFontSize') as THREE.BufferAttribute).needsUpdate = true;
+            (pb.geometry.getAttribute('aFadeOpacity') as THREE.BufferAttribute).needsUpdate = true;
+            savedWorldPosRef.current = null;
+            savedFontSizesRef.current = null;
+            savedOpacityRef.current = null;
+            cardFormingRef.current = false;
+            cardFormProgressRef.current = 0;
+            activeCardCompanyRef.current = null;
+            particleMat.uniforms.uDensityScale.value = densityScale;
+          } else {
+            // HOVER ENDED / SCROLL AWAY: disintegrate with physics
+            // Figure out card particle count before clearing state
+            const company = activeCompany;
+            const numCards = company ? Math.min(COMPANY_PROJECTS[company]?.length ?? 0, 1) : 0;
+            const cardPtCount = numCards * PARTICLES_PER_CARD;
+            disintCardCountRef.current = cardPtCount;
+
+            cardFormingRef.current = false;
+            cardDisintegratingRef.current = true;
+            disintTickRef.current = 0;
+            activeCardCompanyRef.current = null;
+
+            // Gentle velocity kick — ONLY for card particles, not hidden ones
+            // Also scale up card particle fonts by 1.5x for a bolder scatter start
+            const velBuf = new Float32Array(pb.count * 3);
+            for (let i = 0; i < cardPtCount; i++) {
+              const angle = Math.random() * Math.PI * 2;
+              const speed = 0.3 + Math.random() * 0.8;
+              velBuf[i * 3]     = Math.cos(angle) * speed;
+              velBuf[i * 3 + 1] = Math.sin(angle) * speed * 0.6;
+              velBuf[i * 3 + 2] = (Math.random() - 0.5) * 0.4;
+              fontArr[i] *= 1.5;  // 50% bigger at scatter start, lerps back during converge
+            }
+            disintVelocitiesRef.current = velBuf;
+
+            // Hidden particles: snap positions back to saved immediately
+            // (they were at z=2000 which would cause flying-in artifacts)
+            // Keep opacity at 0 — they fade in gradually during animation
+            const saved = savedWorldPosRef.current!;
+            for (let i = cardPtCount; i < pb.count; i++) {
+              const i3 = i * 3;
+              posArr[i3]     = saved[i3];
+              posArr[i3 + 1] = saved[i3 + 1];
+              posArr[i3 + 2] = saved[i3 + 2];
+            }
+          }
+        }
+
+        // ── ANIMATE DISINTEGRATION: card particles scatter gently, hidden particles fade in
+        if (cardDisintegratingRef.current && savedWorldPosRef.current) {
           const saved = savedWorldPosRef.current;
           const savedFonts = savedFontSizesRef.current;
           const savedOpac = savedOpacityRef.current;
-          posArr.set(saved);
-          if (savedFonts) fontArr.set(savedFonts);
-          if (savedOpac) pb.opacityBuf.set(savedOpac);
-          (pb.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
-          (pb.geometry.getAttribute('aFontSize') as THREE.BufferAttribute).needsUpdate = true;
-          (pb.geometry.getAttribute('aFadeOpacity') as THREE.BufferAttribute).needsUpdate = true;
-          savedWorldPosRef.current = null;
-          savedFontSizesRef.current = null;
-          savedOpacityRef.current = null;
-          cardFormingRef.current = false;
-          cardFormProgressRef.current = 0;
-          activeCardCompanyRef.current = null;
-          // Restore user's density scale
-          particleMat.uniforms.uDensityScale.value = densityScale;
+          const vel = disintVelocitiesRef.current;
+          const tick = disintTickRef.current;
+          const cardPtCount = disintCardCountRef.current;
+          disintTickRef.current++;
+
+          const DRIFT_TICKS = 20;   // gentle drift phase
+          const TOTAL_TICKS = 70;   // full animation ~1.2s at 60fps
+          const t = Math.min(tick / TOTAL_TICKS, 1);
+
+          if (tick < TOTAL_TICKS) {
+            // ── Card particles: gentle scatter then converge ──
+            for (let i = 0; i < cardPtCount; i++) {
+              const i3 = i * 3;
+
+              if (tick < DRIFT_TICKS && vel) {
+                // Gentle drift with strong damping
+                vel[i3]     *= 0.92;
+                vel[i3 + 1] *= 0.92;
+                vel[i3 + 2] *= 0.92;
+                posArr[i3]     += vel[i3];
+                posArr[i3 + 1] += vel[i3 + 1];
+                posArr[i3 + 2] += vel[i3 + 2];
+              }
+
+              // Smooth converge toward tree positions — ease-in
+              const ease = t * t;  // quadratic ease-in: slow start, fast finish
+              const cf = 0.02 + ease * 0.10;
+              posArr[i3]     += (saved[i3]     - posArr[i3])     * cf;
+              posArr[i3 + 1] += (saved[i3 + 1] - posArr[i3 + 1]) * cf;
+              posArr[i3 + 2] += (saved[i3 + 2] - posArr[i3 + 2]) * cf;
+
+              // Font sizes: lerp gently back to tree sizes
+              if (savedFonts) fontArr[i] += (savedFonts[i] - fontArr[i]) * (cf * 0.8);
+              // Opacity: lerp back
+              if (savedOpac) pb.opacityBuf[i] += (savedOpac[i] - pb.opacityBuf[i]) * cf;
+            }
+
+            // ── Hidden particles: fade in gradually at their tree positions ──
+            // Positions already snapped to saved on trigger; just fade opacity in
+            const fadeInT = clamp((tick - 10) / 40, 0, 1);  // starts after tick 10, takes 40 ticks
+            for (let i = cardPtCount; i < pb.count; i++) {
+              if (savedFonts) fontArr[i] += (savedFonts[i] - fontArr[i]) * 0.06;
+              if (savedOpac) pb.opacityBuf[i] = savedOpac[i] * fadeInT;
+            }
+
+            (pb.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
+            (pb.geometry.getAttribute('aFontSize') as THREE.BufferAttribute).needsUpdate = true;
+            (pb.geometry.getAttribute('aFadeOpacity') as THREE.BufferAttribute).needsUpdate = true;
+          } else {
+            // Animation complete — snap to exact saved state
+            posArr.set(saved);
+            if (savedFonts) fontArr.set(savedFonts);
+            if (savedOpac) pb.opacityBuf.set(savedOpac);
+            (pb.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
+            (pb.geometry.getAttribute('aFontSize') as THREE.BufferAttribute).needsUpdate = true;
+            (pb.geometry.getAttribute('aFadeOpacity') as THREE.BufferAttribute).needsUpdate = true;
+
+            // Clean up
+            savedWorldPosRef.current = null;
+            savedFontSizesRef.current = null;
+            savedOpacityRef.current = null;
+            disintVelocitiesRef.current = null;
+            cardDisintegratingRef.current = false;
+            cardFormProgressRef.current = 0;
+            activeCardCompanyRef.current = null;
+            particleMat.uniforms.uDensityScale.value = densityScale;
+          }
         }
 
-        // FORM: start new formation if we want a company and aren't forming it
-        if (wantCompany && !cardFormingRef.current) {
+        // FORM: start new formation if we want a company and aren't forming/disintegrating
+        if (wantCompany && !cardFormingRef.current && !cardDisintegratingRef.current) {
           const targets = cardTargetsRef.current.get(wantCompany);
           const numCards = Math.min(COMPANY_PROJECTS[wantCompany]?.length ?? 0, 1);
           const cardPtCount = numCards * PARTICLES_PER_CARD;
@@ -1352,16 +1482,20 @@ export default function DataTree() {
         }
       }
 
-      // Hide watermark during card formation
-      if (watermarkRef.current && (cardFormingRef.current || cardFormProgressRef.current > 0)) {
+      // Hide watermark during card formation or disintegration
+      if (watermarkRef.current && (cardFormingRef.current || cardDisintegratingRef.current || cardFormProgressRef.current > 0)) {
         watermarkRef.current.style.opacity = '0';
       }
 
       // Lerp card formation progress
       if (cardFormingRef.current) {
         cardFormProgressRef.current = Math.min(1, cardFormProgressRef.current + 0.04);
-      } else {
+      } else if (!cardDisintegratingRef.current) {
         cardFormProgressRef.current = Math.max(0, cardFormProgressRef.current - 0.06);
+      } else {
+        // During disintegration, fade cfp out slowly to match the 70-tick animation
+        // and avoid abrupt background/glow transitions
+        cardFormProgressRef.current = Math.max(0, cardFormProgressRef.current - 0.015);
       }
       const cfp = cardFormProgressRef.current;
 
@@ -1391,22 +1525,20 @@ export default function DataTree() {
       const glowStrength = Math.max(scrollWhiteEased, cfp);
       if (treeCanvasRef.current) {
         if (glowStrength > 0.01) {
-          const blur = Math.round(6 + glowStrength * 25);   // 6-31px blur (5× bigger)
-          const brightness = 1 + glowStrength * 2.0;         // 5× brightness boost
+          const blur = Math.round(5 + glowStrength * 14);    // 5-19px blur
+          const brightness = 1 + glowStrength * 0.6;          // subtle brightness lift
           treeCanvasRef.current.style.filter =
-            `drop-shadow(0 0 ${blur}px rgba(255,255,255,${glowStrength * 1.75})) brightness(${brightness})`;
+            `drop-shadow(0 0 ${blur}px rgba(255,255,255,${glowStrength * 0.7})) brightness(${brightness})`;
         } else {
           treeCanvasRef.current.style.filter = 'none';
         }
       }
 
-      // During card formation, canvas background goes opaque black
-      // so multiply-blended images show only through white particles
-      if (cfp > 0) {
-        renderer.setClearColor(0x000000, cfp);
-      } else {
-        renderer.setClearColor(0x000000, 0);
-      }
+      // Canvas background: opaque black when in dark zone (card formation OR scroll-past-work)
+      // Use max of cfp and scrollWhiteEased so canvas stays dark as long as EITHER applies
+      // This prevents the flash where container turns white but canvas is still a dark overlay
+      const clearAlpha = Math.max(cfp, scrollWhiteEased);
+      renderer.setClearColor(0x000000, clearAlpha);
 
       // Smart lines
       updateSmartLines();
@@ -1905,7 +2037,29 @@ export default function DataTree() {
         visible={workVisible}
         onHoverZone={(key) => showWatermark(key, key)}
         onLeaveZone={() => hideWatermark()}
-        onHomePill={() => { resetProgressRef.current(); window.scrollTo(0, 0); }}
+        onHomePill={() => {
+          // Clear hover so card state machine sees wantCompany=null
+          // This triggers natural disintegration as progress lerps down
+          hoveredCardRef.current = null;
+          setHoveredCompany(null);
+          // Clear tint
+          if (particleMatRef.current) {
+            particleMatRef.current.uniforms.uTintStrength.value = 0;
+          }
+          if (treeCanvasRef.current) {
+            treeCanvasRef.current.style.filter = 'none';
+          }
+          // Re-trigger homepage text scramble once we arrive
+          homepageRevealedRef.current = false;
+          setHomepageRevealed(false);
+          setTimeout(() => {
+            homepageRevealedRef.current = true;
+            setHomepageRevealed(true);
+          }, 50);
+          // Smooth scroll: set target, let progress lerp naturally
+          resetProgressRef.current();
+          window.scrollTo(0, 0);
+        }}
         onPillHover={(c) => { hoveredCardRef.current = c; setHoveredCompany(c); }}
         cardRects={cardPositions}
       />
