@@ -164,9 +164,9 @@ export const COMPANY_PROJECTS: Record<string, ProjectEntry[]> = {
 export const CARD_BENTO_LAYOUTS: Record<string, {
   areas: string; cols: string; rows: number; cardAreas: string[];
 }> = {
-  'STABLE MONEY': { areas: '"a b" "c d"', cols: '1fr 1fr', rows: 2, cardAreas: ['a','b','c','d'] },
-  'DAILYOBJECTS':  { areas: '"a b" "c d"', cols: '1fr 1fr', rows: 2, cardAreas: ['a','b','c','d'] },
-  'CREPDOGCREW':   { areas: '"a b" "c d"', cols: '1fr 1fr', rows: 2, cardAreas: ['a','b','c','d'] },
-  'PROBO':         { areas: '"a b" "c d"', cols: '1fr 1fr', rows: 2, cardAreas: ['a','b','c','d'] },
-  'OTHER':         { areas: '"a b" "c d"', cols: '1fr 1fr', rows: 2, cardAreas: ['a','b','c','d'] },
+  'STABLE MONEY': { areas: '"a"', cols: '1fr', rows: 1, cardAreas: ['a'] },
+  'DAILYOBJECTS':  { areas: '"a"', cols: '1fr', rows: 1, cardAreas: ['a'] },
+  'CREPDOGCREW':   { areas: '"a"', cols: '1fr', rows: 1, cardAreas: ['a'] },
+  'PROBO':         { areas: '"a"', cols: '1fr', rows: 1, cardAreas: ['a'] },
+  'OTHER':         { areas: '"a"', cols: '1fr', rows: 1, cardAreas: ['a'] },
 };

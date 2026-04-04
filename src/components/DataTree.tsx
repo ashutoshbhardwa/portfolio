@@ -151,9 +151,9 @@ function assignDigit(darkness: number): number {
 
 // ── Card target computation ──────────────────────────────────────────────────
 
-const PARTICLES_PER_CARD = 1088;  // 34 × 32
-const CARD_COLS = 34;
-const CARD_ROWS = 32;
+const PARTICLES_PER_CARD = 5600;  // 100 × 56 — high-res LED screen, no overlap
+const CARD_COLS = 100;
+const CARD_ROWS = 56;
 
 export interface CardRect { x: number; y: number; w: number; h: number }
 
@@ -163,44 +163,22 @@ function computeCardTargets(
   cardPixelWidthRef: React.MutableRefObject<number>,
   cardPixelHeightRef: React.MutableRefObject<number>,
   cardRectsRef: React.MutableRefObject<CardRect[]>,
-): Map<string, Float32Array> {
-  const result = new Map<string, Float32Array>();
+): { positions: Map<string, Float32Array>; opacities: Map<string, Float32Array> } {
+  const positions = new Map<string, Float32Array>();
+  const opacities = new Map<string, Float32Array>();
   const d = FOV / (FOV + CAMERA_Z_OFFSET);
   const SCENE_SCALE = Math.min(W, H) * SCENE_SCALE_FACTOR;
 
-  // Card area proportions (from Figma at 1440×900)
-  const cardAreaLeft   = W * 0.354;
-  const cardAreaRight  = W * 0.876;
-  const cardAreaTop    = H * 0.176;
-  const cardAreaBottom = H * 0.832;
-  const cardAreaW = cardAreaRight - cardAreaLeft;
-  const cardAreaH = cardAreaBottom - cardAreaTop;
+  // Flipped layout: card fills top 80%, header/controls at bottom 20%
+  // This keeps particles in the tree's safe Y zone (high worldY = canopy, no terrain fade)
+  const cardLeft   = W * 0.02;
+  const cardTop    = 0;           // starts at very top
+  const cardW      = W * 0.96;   // 2% margin each side
+  const cardH      = H * 0.78;   // top 78%, leaving 22% for bottom header area
 
-  // UNIFORM gap — same horizontal and vertical (~17px at 1440)
-  const gap = W * 0.012;
-
-  // Card dimensions with 4:3 aspect ratio
-  let cardW = (cardAreaW - gap) / 2;
-  let cardH = cardW / 1.34;
-
-  // If cards overflow vertically, scale down
-  if (cardH * 2 + gap > cardAreaH) {
-    cardH = (cardAreaH - gap) / 2;
-    cardW = cardH * 1.34;
-  }
-
-  // Center the 2×2 grid within the card area
-  const totalGridW = cardW * 2 + gap;
-  const totalGridH = cardH * 2 + gap;
-  const offsetX = cardAreaLeft + (cardAreaW - totalGridW) / 2;
-  const offsetY = cardAreaTop + (cardAreaH - totalGridH) / 2;
-
-  // 4 card positions — always the same
+  // 1 card position — full-width single card
   const cardRects: CardRect[] = [
-    { x: offsetX,              y: offsetY,              w: cardW, h: cardH }, // top-left
-    { x: offsetX + cardW + gap, y: offsetY,              w: cardW, h: cardH }, // top-right
-    { x: offsetX,              y: offsetY + cardH + gap, w: cardW, h: cardH }, // bottom-left
-    { x: offsetX + cardW + gap, y: offsetY + cardH + gap, w: cardW, h: cardH }, // bottom-right
+    { x: cardLeft, y: cardTop, w: cardW, h: cardH },
   ];
 
   // Store card pixel dimensions for font size calculation + overlay positioning
@@ -208,31 +186,51 @@ function computeCardTargets(
   cardPixelHeightRef.current = cardH;
   cardRectsRef.current = cardRects;
 
-  const padding = 13 * (W / 1440);
-  const cellW = cardW / CARD_COLS;
-  const cellH = cardH / CARD_ROWS;
+  const NUM_CARDS = 1;  // Single card layout
 
   for (const [company, projects] of Object.entries(COMPANY_PROJECTS)) {
-    const numCards = projects.length;
+    const numCards = Math.min(projects.length, NUM_CARDS);
     const buf = new Float32Array(numCards * PARTICLES_PER_CARD * 3);
+    const opBuf = new Float32Array(numCards * PARTICLES_PER_CARD);
 
-    for (let ci = 0; ci < numCards && ci < 4; ci++) {
+    for (let ci = 0; ci < numCards; ci++) {
       const rect = cardRects[ci];
+      const cellW = rect.w / CARD_COLS;
+      const cellH = rect.h / CARD_ROWS;
       for (let row = 0; row < CARD_ROWS; row++) {
         for (let col = 0; col < CARD_COLS; col++) {
           const pi = ci * PARTICLES_PER_CARD + row * CARD_COLS + col;
-          const screenX = rect.x + padding + (col + 0.5) * cellW;
+          const screenX = rect.x + (col + 0.5) * cellW;
           const screenY = rect.y + (row + 0.5) * cellH;
-          buf[pi * 3]     = (screenX - W * 0.58) / (SCENE_SCALE * d);
-          buf[pi * 3 + 1] = (H * 0.85 - screenY) / (SCENE_SCALE * d * 1.15);
+          // Standard 0.85 offset — matches vertex shader's screen mapping
+          const worldX = (screenX - W * 0.58) / (SCENE_SCALE * d);
+          const worldY = (H * 0.85 - screenY) / (SCENE_SCALE * d * 1.15);
+          buf[pi * 3]     = worldX;
+          buf[pi * 3 + 1] = worldY;
           buf[pi * 3 + 2] = 0;
+
+          // Compute expected terrain fade at this world position and compensate
+          // Vertex shader: if yNorm < 0.25 → distFade² * yFade
+          // centerDist = length(xz) — for card particles z=0, so centerDist = |worldX|
+          const centerDist = Math.abs(worldX);
+          let terrainFade = 1.0;
+          if (worldY < 0.25) {
+            const distFade = Math.max(0, Math.min(1, 1.0 - (centerDist - 0.12) / 1.28));
+            const yFade = Math.max(0.3, Math.min(1, worldY / 0.25));
+            terrainFade = distFade * distFade * yFade;
+          }
+          // Boost opacity to counteract terrain fade (cap at 12x to avoid blowout)
+          // Fragment shader discards when vAlpha < 0.02, so we need the boost
+          // to keep vAlpha * vFadeOpacity above the visible threshold
+          opBuf[pi] = terrainFade > 0.005 ? Math.min(1.0 / terrainFade, 12.0) : 12.0;
         }
       }
     }
-    result.set(company, buf);
+    positions.set(company, buf);
+    opacities.set(company, opBuf);
   }
 
-  return result;
+  return { positions, opacities };
 }
 
 // ── Ambient copy ─────────────────────────────────────────────────────────────
@@ -293,6 +291,7 @@ export default function DataTree() {
   const cardFormProgressRef = useRef(0);
   const activeCardCompanyRef = useRef<string | null>(null);
   const cardTargetsRef = useRef<Map<string, Float32Array>>(new Map());
+  const cardOpacityTargetsRef = useRef<Map<string, Float32Array>>(new Map());
   const savedWorldPosRef = useRef<Float32Array | null>(null);
   const savedFontSizesRef = useRef<Float32Array | null>(null);
   const savedOpacityRef = useRef<Float32Array | null>(null);
@@ -303,6 +302,22 @@ export default function DataTree() {
 
   // Card positions state for WorkPage overlays
   const [cardPositions, setCardPositions] = useState<CardRect[]>([]);
+
+  // Card image overlay state (rendered at DataTree level for correct blend mode compositing)
+  const [hoveredCompany, setHoveredCompany] = useState<string | null>(null);
+  const [cardImagesVisible, setCardImagesVisible] = useState(false);
+  const cardImagesTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Sync hoveredCompany → delayed image visibility
+  useEffect(() => {
+    if (cardImagesTimerRef.current) clearTimeout(cardImagesTimerRef.current);
+    if (hoveredCompany && COMPANY_PROJECTS[hoveredCompany]) {
+      cardImagesTimerRef.current = setTimeout(() => setCardImagesVisible(true), 350);
+    } else {
+      setCardImagesVisible(false);
+    }
+    return () => { if (cardImagesTimerRef.current) clearTimeout(cardImagesTimerRef.current); };
+  }, [hoveredCompany]);
 
   // ── Color state (lerped in render loop) ──────────────────────────────────
   const colorStateRef = useRef({
@@ -456,7 +471,7 @@ export default function DataTree() {
           "aScatterPos"
         ) as THREE.BufferAttribute;
         redistributeScatter(pb.scatterBuf, scatterAttr, W, H);
-        cardTargetsRef.current = computeCardTargets(W, H, cardPixelWidthRef, cardPixelHeightRef, cardRectsRef);
+        { const _ct = computeCardTargets(W, H, cardPixelWidthRef, cardPixelHeightRef, cardRectsRef); cardTargetsRef.current = _ct.positions; cardOpacityTargetsRef.current = _ct.opacities; }
         setCardPositions([...cardRectsRef.current]);
       }
     }
@@ -504,7 +519,7 @@ export default function DataTree() {
       const scatterAttr = pb.geometry.getAttribute('aScatterPos') as THREE.BufferAttribute;
       redistributeScatter(pb.scatterBuf, scatterAttr, W, H);
       // Compute card formation targets
-      cardTargetsRef.current = computeCardTargets(W, H, cardPixelWidthRef, cardPixelHeightRef, cardRectsRef);
+      { const _ct = computeCardTargets(W, H, cardPixelWidthRef, cardPixelHeightRef, cardRectsRef); cardTargetsRef.current = _ct.positions; cardOpacityTargetsRef.current = _ct.opacities; }
       setCardPositions([...cardRectsRef.current]);
     }
 
@@ -953,12 +968,14 @@ export default function DataTree() {
         const brandLum = 0.299 * cs.r + 0.587 * cs.g + 0.114 * cs.b;
 
         if (isExperience) {
-          // ── EXPERIENCE: full background flood ──
-          const mixR = Math.round((bgR + (cs.r - bgR) * cs.strength) * 255);
-          const mixG = Math.round((bgG + (cs.g - bgG) * cs.strength) * 255);
-          const mixB = Math.round((bgB + (cs.b - bgB) * cs.strength) * 255);
-          container.style.background = `rgb(${mixR},${mixG},${mixB})`;
-          if (blurRectRef.current) blurRectRef.current.style.background = `rgb(${mixR},${mixG},${mixB})`;
+          // ── EXPERIENCE: background flood only on home screen (pre-work) ──
+          if (progress < 1.0) {
+            const mixR = Math.round((bgR + (cs.r - bgR) * cs.strength) * 255);
+            const mixG = Math.round((bgG + (cs.g - bgG) * cs.strength) * 255);
+            const mixB = Math.round((bgB + (cs.b - bgB) * cs.strength) * 255);
+            container.style.background = `rgb(${mixR},${mixG},${mixB})`;
+            if (blurRectRef.current) blurRectRef.current.style.background = `rgb(${mixR},${mixG},${mixB})`;
+          }
 
           // Particles stay dark (no tint) — they contrast against colored bg
           // Exception: DailyObjects (black bg) → particles should go white
@@ -1009,9 +1026,7 @@ export default function DataTree() {
             });
           }
         } else {
-          // ── SKILL: background stays white, particles + overlays change color ──
-          container.style.background = '#F9F8F4';
-          if (blurRectRef.current) blurRectRef.current.style.background = '#F9F8F4';
+          // ── SKILL: particles + overlays change color (bg handled by progress-based transition) ──
 
           // Particles tint to brand color
           particleMat.uniforms.uTintColor.value.set(cs.r, cs.g, cs.b);
@@ -1049,16 +1064,14 @@ export default function DataTree() {
           }
         }
       } else {
-        // ── Reset to defaults ──
+        // ── Reset to defaults (bg handled by progress-based transition) ──
         cs.activeZone = null;
         cs.zoneType = null;
-        container.style.background = '#F9F8F4';
         particleMat.uniforms.uTintStrength.value = 0;
         if (nameInner) nameInner.style.color = '#0A0A0A';
         if (subtitleInner) subtitleInner.style.color = 'rgb(10,10,10)';
         if (paraRef.current) paraRef.current.style.color = 'rgba(0,0,0,0.45)';
         if (watermarkRef.current) watermarkRef.current.style.color = 'rgba(10,10,10,0.22)';
-        if (blurRectRef.current) blurRectRef.current.style.background = '#F9F8F4';
         if (workPillInner) {
           workPillInner.style.background = '#000000';
           workPillInner.style.color = '#FFFFFF';
@@ -1080,27 +1093,41 @@ export default function DataTree() {
         }
       }
 
+      // ── Organic background transition: white (#F9F8F4) → black ──
+      // Smooth ease-in-out as scroll enters the work section
+      const workBgT = clamp((progress - 1.0) / 0.3, 0, 1);
+      const smoothBgT = workBgT * workBgT * (3 - 2 * workBgT); // smoothstep
+      if (progress >= 0.95) {
+        const bgR_s = Math.round(249 * (1 - smoothBgT));
+        const bgG_s = Math.round(248 * (1 - smoothBgT));
+        const bgB_s = Math.round(244 * (1 - smoothBgT));
+        container.style.background = `rgb(${bgR_s},${bgG_s},${bgB_s})`;
+        if (blurRectRef.current) blurRectRef.current.style.background = `rgb(${bgR_s},${bgG_s},${bgB_s})`;
+      } else if (cs.strength < 0.005) {
+        // Home screen default (no zone hovered)
+        container.style.background = '#F9F8F4';
+        if (blurRectRef.current) blurRectRef.current.style.background = '#F9F8F4';
+      }
+
       // WorkPage color sync via CSS variables
+      // On work page (black bg), brand color shows on WORK header + pills
       if (workPageRef.current && workVisibleRef.current) {
         const s = cs.strength;
         const el = workPageRef.current;
         if (s > 0.01) {
-          const isExp = cs.zoneType === 'experience';
-          if (isExp) {
-            el.style.setProperty('--wp-text', '#ffffff');
-            el.style.setProperty('--wp-pill-bg', '#ffffff');
-            el.style.setProperty('--wp-pill-text', `rgb(${r255},${g255},${b255})`);
-            el.style.setProperty('--wp-toggle-bg', 'rgba(255,255,255,0.2)');
-          } else {
-            el.style.setProperty('--wp-text', `rgb(${r255},${g255},${b255})`);
-            el.style.setProperty('--wp-pill-bg', `rgb(${r255},${g255},${b255})`);
-            el.style.setProperty('--wp-pill-text', '#ffffff');
-            el.style.setProperty('--wp-toggle-bg', `rgba(${r255},${g255},${b255},0.15)`);
-          }
+          // Brand hover: text + pills use brand color (white fallback for dark brands)
+          const brandLum = 0.299 * cs.r + 0.587 * cs.g + 0.114 * cs.b;
+          const brandIsDark = brandLum < 0.15;
+          const wpColor = brandIsDark ? '#ffffff' : `rgb(${r255},${g255},${b255})`;
+          el.style.setProperty('--wp-text', wpColor);
+          el.style.setProperty('--wp-pill-bg', wpColor);
+          el.style.setProperty('--wp-pill-text', brandIsDark ? '#000000' : '#ffffff');
+          el.style.setProperty('--wp-toggle-bg', `rgba(${r255},${g255},${b255},0.2)`);
         } else {
-          el.style.setProperty('--wp-text', '#000000');
-          el.style.setProperty('--wp-pill-bg', '#000000');
-          el.style.setProperty('--wp-pill-text', '#ffffff');
+          // Default: white text/pills on black bg
+          el.style.setProperty('--wp-text', '#ffffff');
+          el.style.setProperty('--wp-pill-bg', '#ffffff');
+          el.style.setProperty('--wp-pill-text', '#000000');
           el.style.setProperty('--wp-toggle-bg', 'transparent');
         }
       }
@@ -1215,6 +1242,12 @@ export default function DataTree() {
       // CPU work
       updateCPU();
 
+      // ── Clear card/hover state when scrolling away from Work page ────────
+      if (progress < 1.2 && hoveredCardRef.current) {
+        hoveredCardRef.current = null;
+        setHoveredCompany(null);
+      }
+
       // ── Card formation state machine ──────────────────────────────────────
       if (pb) {
         const posArr = pb.geometry.getAttribute('position').array as Float32Array;
@@ -1240,12 +1273,14 @@ export default function DataTree() {
           cardFormingRef.current = false;
           cardFormProgressRef.current = 0;
           activeCardCompanyRef.current = null;
+          // Restore user's density scale
+          particleMat.uniforms.uDensityScale.value = densityScale;
         }
 
         // FORM: start new formation if we want a company and aren't forming it
         if (wantCompany && !cardFormingRef.current) {
           const targets = cardTargetsRef.current.get(wantCompany);
-          const numCards = COMPANY_PROJECTS[wantCompany]?.length ?? 0;
+          const numCards = Math.min(COMPANY_PROJECTS[wantCompany]?.length ?? 0, 1);
           const cardPtCount = numCards * PARTICLES_PER_CARD;
           if (targets) {
             savedWorldPosRef.current = new Float32Array(posArr);
@@ -1277,33 +1312,29 @@ export default function DataTree() {
         if (cardFormingRef.current && activeCardCompanyRef.current) {
           const company = activeCardCompanyRef.current;
           const targets = cardTargetsRef.current.get(company);
-          const numCards = COMPANY_PROJECTS[company]?.length ?? 0;
+          const opTargets = cardOpacityTargetsRef.current.get(company);
+          const numCards = Math.min(COMPANY_PROJECTS[company]?.length ?? 0, 1);
           const cardPtCount = numCards * PARTICLES_PER_CARD;
 
           if (targets) {
-            // Font size derived from card width, NOT from density control
-            const cardCellW = cardPixelWidthRef.current / CARD_COLS;
-            const perspD = FOV / (FOV + CAMERA_Z_OFFSET);
-            const targetFontSize = (cardCellW * 1.45) / perspD;
+            // LOCKED card font size — compute from actual card cell size
+            const d_persp = FOV / (FOV + CAMERA_Z_OFFSET);
+            const rect0 = cardRectsRef.current[0];
+            const cellW = rect0 ? rect0.w / CARD_COLS : 14;
+            // 0.85 factor ensures characters NEVER overlap — 85% of cell width
+            const targetFontSize = (cellW * 0.85) / d_persp;
+            // Force density scale to 1.0 during card formation so font is stable
+            particleMat.uniforms.uDensityScale.value = 1.0;
 
-            const lumGrids = cardLuminanceRef.current;
             for (let i = 0; i < cardPtCount; i++) {
               const i3 = i * 3;
               posArr[i3]     += (targets[i3]     - posArr[i3])     * 0.07;
               posArr[i3 + 1] += (targets[i3 + 1] - posArr[i3 + 1]) * 0.07;
               posArr[i3 + 2] += (targets[i3 + 2] - posArr[i3 + 2]) * 0.07;
               fontArr[i] += (targetFontSize - fontArr[i]) * 0.07;
-
-              // Luminance-driven opacity: sample the image brightness for this cell
-              const cardIdx = Math.floor(i / PARTICLES_PER_CARD);
-              const cellIdx = i % PARTICLES_PER_CARD; // 0..1087 → row*34+col
-              const lumGrid = lumGrids[cardIdx];
-              // Target opacity: luminance value (bright=visible, dark=faded)
-              // Minimum 0.08 so even dark areas have a faint presence
-              const targetOpacity = lumGrid
-                ? Math.max(0.08, lumGrid[cellIdx])
-                : 1.0; // fallback: full opacity if image not loaded yet
-              pb.opacityBuf[i] += (targetOpacity - pb.opacityBuf[i]) * 0.09;
+              // Lerp toward boosted opacity target to compensate terrain fade
+              const opTarget = opTargets ? opTargets[i] : 1.0;
+              pb.opacityBuf[i] += (opTarget - pb.opacityBuf[i]) * 0.09;
             }
             // Keep non-card particles hidden
             for (let i = cardPtCount; i < pb.count; i++) {
@@ -1344,6 +1375,38 @@ export default function DataTree() {
       particleMat.uniforms.uDisintegration.value = cfp > 0 ? Math.max(0, disint - disint * cfp) : disint;
       if (progress >= 1.50) targetProgress = 1.50;
       lineMat.uniforms.uTime.value = time;
+
+      // Particles: transition dark→white as background goes white→black on scroll
+      // Uses the same smoothstep as the background transition
+      const scrollWhiteT = clamp((progress - 1.0) / 0.3, 0, 1);
+      const scrollWhiteEased = scrollWhiteT * scrollWhiteT * (3 - 2 * scrollWhiteT);
+      if (scrollWhiteEased > 0) {
+        particleMat.uniforms.uTintColor.value.set(1, 1, 1);
+        // Card formation overrides: use max of scroll tint and cfp tint
+        particleMat.uniforms.uTintStrength.value = Math.max(scrollWhiteEased, cfp);
+      }
+
+      // LED glow effect — particles glow when background is dark
+      // Uses CSS filter on canvas for performant soft glow
+      const glowStrength = Math.max(scrollWhiteEased, cfp);
+      if (treeCanvasRef.current) {
+        if (glowStrength > 0.01) {
+          const blur = Math.round(6 + glowStrength * 25);   // 6-31px blur (5× bigger)
+          const brightness = 1 + glowStrength * 2.0;         // 5× brightness boost
+          treeCanvasRef.current.style.filter =
+            `drop-shadow(0 0 ${blur}px rgba(255,255,255,${glowStrength * 1.75})) brightness(${brightness})`;
+        } else {
+          treeCanvasRef.current.style.filter = 'none';
+        }
+      }
+
+      // During card formation, canvas background goes opaque black
+      // so multiply-blended images show only through white particles
+      if (cfp > 0) {
+        renderer.setClearColor(0x000000, cfp);
+      } else {
+        renderer.setClearColor(0x000000, 0);
+      }
 
       // Smart lines
       updateSmartLines();
@@ -1410,6 +1473,36 @@ export default function DataTree() {
         ref={treeCanvasRef}
         style={{ position: "absolute", inset: 0, zIndex: 2, pointerEvents: "none" }}
       />
+
+      {/* Card image layer — rendered here (sibling of canvas) so mix-blend-mode:multiply
+          composites against the canvas particles' backdrop. z-index:3 paints after canvas (z:2),
+          so the backdrop includes the white card particles. On dark brand backgrounds,
+          multiply(image, black) = black (hidden), multiply(image, white_particle) = image (visible).
+          This creates the effect of images showing THROUGH the living particle characters. */}
+      {hoveredCompany && COMPANY_PROJECTS[hoveredCompany] && cardPositions.length >= 1 && (
+        cardPositions.slice(0, 1).map((rect, i) => {
+          const project = COMPANY_PROJECTS[hoveredCompany]?.[i];
+          if (!project) return null;
+          return (
+            <img
+              key={`card-img-${i}`}
+              src={project.image}
+              alt=""
+              style={{
+                position: 'absolute',
+                left: rect.x, top: rect.y,
+                width: rect.w, height: rect.h,
+                objectFit: 'cover',
+                mixBlendMode: 'multiply',
+                opacity: cardImagesVisible ? 1 : 0,
+                transition: 'opacity 0.6s ease',
+                pointerEvents: 'none',
+                zIndex: 3,
+              }}
+            />
+          );
+        })
+      )}
 
       {/* Vignette — Figma 8064:29649, centered, #f9f8f4, blur 72px */}
       <div
@@ -1813,7 +1906,7 @@ export default function DataTree() {
         onHoverZone={(key) => showWatermark(key, key)}
         onLeaveZone={() => hideWatermark()}
         onHomePill={() => { resetProgressRef.current(); window.scrollTo(0, 0); }}
-        onPillHover={(c) => { hoveredCardRef.current = c; }}
+        onPillHover={(c) => { hoveredCardRef.current = c; setHoveredCompany(c); }}
         cardRects={cardPositions}
       />
     </div>

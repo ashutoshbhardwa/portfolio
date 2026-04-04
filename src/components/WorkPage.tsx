@@ -1,35 +1,10 @@
 'use client';
-import React, { useState, useEffect, useRef, forwardRef } from 'react';
+import React, { useState, useEffect, useRef, forwardRef, useCallback } from 'react';
 import TextScramble from './TextScramble';
-import { COMPANY_PROJECTS, ZONE_COLORS } from './data-tree/constants';
 import type { CardRect } from './DataTree';
+import { ZONE_COLORS } from './data-tree/constants';
 
-const PillReveal = ({ children, delay = 0 }: {
-  children: React.ReactNode; delay?: number;
-}) => {
-  const innerRef = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(0);
-
-  useEffect(() => {
-    if (!innerRef.current) return;
-    const natural = innerRef.current.scrollWidth;
-    const t = setTimeout(() => setWidth(natural), delay);
-    return () => clearTimeout(t);
-  }, []);
-
-  return (
-    <div style={{
-      overflow: 'hidden',
-      width: width,
-      transition: 'width 0.6s cubic-bezier(0.22, 1, 0.36, 1)',
-      display: 'inline-flex',
-    }}>
-      <div ref={innerRef} style={{ width: 'max-content', flexShrink: 0 }}>
-        {children}
-      </div>
-    </div>
-  );
-};
+// ── Scramble PillButton ─────────────────────────────────────────────────────
 
 const PillButton = ({ children, onClick, onMouseEnter, onMouseLeave, style }: {
   children: string;
@@ -56,10 +31,7 @@ const PillButton = ({ children, onClick, onMouseEnter, onMouseLeave, style }: {
       }
       setDisplayText(out);
       ticks++;
-      if (ticks > 8) {
-        clearInterval(intervalRef.current!);
-        setDisplayText(children);
-      }
+      if (ticks > 8) { clearInterval(intervalRef.current!); setDisplayText(children); }
     }, 40);
   };
 
@@ -78,10 +50,7 @@ const PillButton = ({ children, onClick, onMouseEnter, onMouseLeave, style }: {
       }
       setDisplayText(out);
       step++;
-      if (step > steps) {
-        clearInterval(intervalRef.current!);
-        setDisplayText(children);
-      }
+      if (step > steps) { clearInterval(intervalRef.current!); setDisplayText(children); }
     }, 35);
   };
 
@@ -99,9 +68,7 @@ const PillButton = ({ children, onClick, onMouseEnter, onMouseLeave, style }: {
     onClick?.();
   };
 
-  useEffect(() => () => {
-    if (intervalRef.current) clearInterval(intervalRef.current);
-  }, []);
+  useEffect(() => () => { if (intervalRef.current) clearInterval(intervalRef.current); }, []);
 
   return (
     <div
@@ -121,33 +88,32 @@ const PillButton = ({ children, onClick, onMouseEnter, onMouseLeave, style }: {
   );
 };
 
+// ── Pill data ───────────────────────────────────────────────────────────────
+// Years as specified by user: DO=2022, CDC=2024, Probo=2025, SM=2026
 const EXP_PILLS = [
-  { key: 'DAILYOBJECTS',  label: 'DAILYOBJECTS',  role: 'Brand + Product Designer', period: '2022–2024', desc: 'Crafting brand systems and product design for India\'s leading accessories company. Identity, packaging, digital — all of it.' },
-  { key: 'CREPDOGCREW',   label: 'CREPDOGCREW',   role: 'Visual Designer',           period: '2021–2022', desc: 'Building the visual language for India\'s sneaker culture. Drops, campaigns, community.' },
-  { key: 'PROBO',         label: 'PROBO',          role: 'Product Designer',          period: '2023–2024', desc: 'Designing for a prediction market at scale. Speed, clarity, trust.' },
-  { key: 'STABLE MONEY',  label: 'STABLE MONEY',   role: 'Lead Designer',             period: '2024–Present', desc: 'Making fixed income feel modern. Systematic design for a complex financial product.' },
-  { key: 'OTHER',         label: 'OTHER',          role: 'Freelance',                 period: '2019–Present', desc: 'Independent work, passion projects, and things that don\'t fit a box.' },
+  { key: 'DAILYOBJECTS',  label: 'DAILYOBJECTS',  year: 2022, desc: 'Crafting brand systems and product design for India\u2019s leading accessories company. Identity, packaging, digital \u2014 all of it.' },
+  { key: 'CREPDOGCREW',   label: 'CREPDOGCREW',   year: 2024, desc: 'Building the visual language for India\u2019s sneaker culture. Drops, campaigns, community.' },
+  { key: 'PROBO',         label: 'PROBO',          year: 2025, desc: 'Designing for a prediction market at scale. Speed, clarity, trust.' },
+  { key: 'STABLE MONEY',  label: 'STABLE MONEY',   year: 2026, desc: 'Making fixed income feel modern. Systematic design for a complex financial product.' },
+  { key: 'OTHER',         label: 'OTHER',          year: 2021, desc: 'Independent work, passion projects, and things that don\u2019t fit a box.' },
 ];
 
 const SKILL_PILLS = [
-  { key: 'MOTION DESIGN', label: 'MOTION DESIGN', desc: 'Motion as a language. Transitions, interactions, and things that feel alive.' },
-  { key: 'SYSTEMS',       label: 'SYSTEMS',       desc: 'Design systems that scale. Tokens, components, documentation.' },
-  { key: '3D',            label: '3D',            desc: 'Dimensional work. Objects, environments, and spatial thinking.' },
-  { key: 'BRAND',         label: 'BRAND',         desc: 'Identity at its core. Marks, systems, and how things present themselves.' },
-  { key: 'GLITCH',        label: 'GLITCH',        desc: 'Controlled chaos. Distortion as aesthetic, noise as signal.' },
+  { key: 'MOTION DESIGN', label: 'MOTION DESIGN', year: 2022, desc: 'Motion as a language. Transitions, interactions, and things that feel alive.' },
+  { key: 'SYSTEMS',       label: 'SYSTEMS',       year: 2023, desc: 'Design systems that scale. Tokens, components, documentation.' },
+  { key: '3D',            label: '3D',            year: 2021, desc: 'Dimensional work. Objects, environments, and spatial thinking.' },
+  { key: 'BRAND',         label: 'BRAND',         year: 2024, desc: 'Identity at its core. Marks, systems, and how things present themselves.' },
+  { key: 'GLITCH',        label: 'GLITCH',        year: 2022, desc: 'Controlled chaos. Distortion as aesthetic, noise as signal.' },
 ];
 
-const DEFAULT_AMBIENT = 'VISUAL DESIGNER \u00B7 BANGALORE \u00B7 MULTI-DISCIPLINARY DESIGNER \u00B7 VISUAL DESIGNER \u00B7 BANGALORE';
+const DEFAULT_DESC = 'Multi-disciplinary designer based in Bangalore. Brand systems, product design, motion, 3D \u2014 building things that feel alive.';
 
-const PILL_STYLE: React.CSSProperties = {
-  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-  background: 'var(--wp-pill-bg, #000)', color: 'var(--wp-pill-text, #fff)', borderRadius: 40,
-  padding: '12px 28px', cursor: 'pointer', userSelect: 'none',
-  fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif',
-  fontWeight: 700, fontSize: 13, letterSpacing: '-0.02em',
-  textTransform: 'uppercase', whiteSpace: 'nowrap',
-  transition: 'opacity 0.3s ease',
-};
+const TIMELINE_TICKS = 25; // visual tick marks below pills
+
+// Auto-disintegrate timeout (ms) — cards disappear after this
+const AUTO_DISINTEGRATE_MS = 10000;
+
+// ── Component ───────────────────────────────────────────────────────────────
 
 interface WorkPageProps {
   visible: boolean;
@@ -158,11 +124,13 @@ interface WorkPageProps {
   cardRects?: CardRect[];
 }
 
-const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage({ visible, onHoverZone, onLeaveZone, onHomePill, onPillHover, cardRects = [] }, ref) {
-  const [mode, setMode] = useState<'exp'|'skill'>('exp');
-  const [hovered, setHovered] = useState<string|null>(null);
-  const [ambientText, setAmbientText] = useState(DEFAULT_AMBIENT);
-  const [ambientKey, setAmbientKey] = useState('default');
+const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
+  { visible, onHoverZone, onLeaveZone, onHomePill, onPillHover, cardRects = [] }, ref
+) {
+  const [mode, setMode] = useState<'exp' | 'skill'>('exp');
+  const [hovered, setHovered] = useState<string | null>(null);
+  const [descText, setDescText] = useState(DEFAULT_DESC);
+  const [descKey, setDescKey] = useState('default');
   const [scrambleTrigger, setScrambleTrigger] = useState(false);
 
   useEffect(() => {
@@ -170,41 +138,47 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage({ v
     else setScrambleTrigger(false);
   }, [visible]);
 
-  // Delayed card overlay visibility (300ms after hover starts)
-  const [overlayVisible, setOverlayVisible] = useState(false);
-  const overlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    if (overlayTimerRef.current) clearTimeout(overlayTimerRef.current);
-    if (hovered && COMPANY_PROJECTS[hovered]) {
-      overlayTimerRef.current = setTimeout(() => setOverlayVisible(true), 300);
-    } else {
-      setOverlayVisible(false);
-    }
-    return () => { if (overlayTimerRef.current) clearTimeout(overlayTimerRef.current); };
-  }, [hovered, mode]);
-
   const [lockedPill, setLockedPill] = useState<string | null>(null);
-
   const pills = mode === 'exp' ? EXP_PILLS : SKILL_PILLS;
 
-  const activatePill = (pill: { key: string; label: string; desc: string }) => {
-    setHovered(pill.key);
-    setAmbientText(pill.desc);
-    setAmbientKey(pill.key);
-    onHoverZone(pill.key);
-    onPillHover?.(pill.key);
-  };
+  // ── Auto-disintegrate timer ──────────────────────────────────────────────
+  const autoDisintegrateRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const deactivatePill = () => {
+  const clearAutoTimer = useCallback(() => {
+    if (autoDisintegrateRef.current) {
+      clearTimeout(autoDisintegrateRef.current);
+      autoDisintegrateRef.current = null;
+    }
+  }, []);
+
+  const deactivatePill = useCallback(() => {
     setHovered(null);
-    setAmbientText(DEFAULT_AMBIENT);
-    setAmbientKey('default');
+    setLockedPill(null);
+    setDescText(DEFAULT_DESC);
+    setDescKey('default');
     onLeaveZone();
     onPillHover?.(null);
-  };
+    clearAutoTimer();
+  }, [onLeaveZone, onPillHover, clearAutoTimer]);
 
-  const handleEnter = (pill: { key: string; label: string; desc: string }) => {
+  const activatePill = useCallback((pill: { key: string; desc: string }) => {
+    setHovered(pill.key);
+    setDescText(pill.desc);
+    setDescKey(pill.key);
+    onHoverZone(pill.key);
+    onPillHover?.(pill.key);
+
+    // Start auto-disintegrate timer
+    clearAutoTimer();
+    autoDisintegrateRef.current = setTimeout(() => {
+      deactivatePill();
+    }, AUTO_DISINTEGRATE_MS);
+  }, [onHoverZone, onPillHover, clearAutoTimer, deactivatePill]);
+
+  // Clean up timer on unmount
+  useEffect(() => () => clearAutoTimer(), [clearAutoTimer]);
+
+  const handleEnter = (pill: { key: string; desc: string }) => {
     if (lockedPill && lockedPill !== pill.key) return;
     activatePill(pill);
   };
@@ -214,17 +188,59 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage({ v
     deactivatePill();
   };
 
-  const handlePillClick = (pill: { key: string; label: string; desc: string }) => {
+  const handlePillClick = (pill: { key: string; desc: string }) => {
     if (lockedPill === pill.key) {
-      setLockedPill(null);
+      // Unlock — deactivate
       deactivatePill();
     } else {
+      // Lock this pill
       setLockedPill(pill.key);
       activatePill(pill);
     }
   };
 
+  // Get the active pill's year for the timeline marker
+  const activePill = pills.find(p => p.key === hovered);
+  const activeYear = activePill?.year ?? null;
+  const activePillIndex = hovered ? pills.findIndex(p => p.key === hovered) : -1;
+
+  // Pill refs to track positions for marker
+  const pillRowRef = useRef<HTMLDivElement>(null);
+  const [markerX, setMarkerX] = useState<number | null>(null);
+
+  // Update marker position when pill changes
+  useEffect(() => {
+    if (activePillIndex < 0 || !pillRowRef.current) {
+      setMarkerX(null);
+      return;
+    }
+    const pillRow = pillRowRef.current;
+    const pillEls = pillRow.children;
+    if (activePillIndex < pillEls.length) {
+      const pillEl = pillEls[activePillIndex] as HTMLElement;
+      // Get center of pill relative to pill row container
+      const pillRect = pillEl.getBoundingClientRect();
+      const rowRect = pillRow.getBoundingClientRect();
+      setMarkerX(pillRect.left - rowRect.left + pillRect.width / 2);
+    }
+  }, [activePillIndex, mode]);
+
   if (!visible) return null;
+
+  const W = typeof window !== 'undefined' ? window.innerWidth : 1440;
+  const H = typeof window !== 'undefined' ? window.innerHeight : 900;
+  // Position scale — proportional to viewport (for layout positioning)
+  const sx = W / 1440;  // horizontal position scale
+  const sy = H / 900;   // vertical position scale
+  // Element scale — capped at 1.0 so elements never grow larger than Figma spec
+  // On smaller screens they shrink; on larger screens they stay Figma-sized
+  const s = Math.min(sx, 1.0);
+
+  // Bottom bar layout — full width, uses the black bar as design element
+  const leftX = 48 * sx;
+  const rightX = 48 * sx;
+  // Pills + timeline span from leftX to W - rightX (full width minus margins)
+  const pillAreaW = W - leftX - rightX;
 
   return (
     <div ref={ref} style={{
@@ -233,188 +249,276 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage({ v
       transition: 'opacity 0.6s ease',
       pointerEvents: 'auto',
     }}>
-      {/* WORK title — top left */}
-      <div style={{ position: 'absolute', top: 'clamp(24px, 3vh, 48px)', left: 'clamp(40px, 4vw, 80px)' }}>
+
+      {/* ═══════════ BOTTOM BAR (bottom ~22%) ═══════════ */}
+
+      {/* Gradient backdrop for bottom UI readability */}
+      <div style={{
+        position: 'absolute',
+        left: 0, right: 0,
+        bottom: 0,
+        height: H * 0.36,
+        background: 'linear-gradient(to top, rgba(0,0,0,0.8) 0%, rgba(0,0,0,0) 100%)',
+        pointerEvents: 'none',
+        zIndex: 9,
+      }} />
+
+      {/* ── Row 1: WORK title (left) + Description (right) — pushed up high ── */}
+      <div style={{
+        position: 'absolute',
+        bottom: 190 * sy,
+        left: leftX,
+        right: rightX,
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'flex-end',
+        zIndex: 10,
+      }}>
+        {/* WORK — large, fills the negative space */}
         <div style={{
-          fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif',
-          fontWeight: 700, fontSize: 'clamp(60px, 8vw, 130px)',
-          letterSpacing: '-0.04em', lineHeight: 1, color: 'var(--wp-text, #000)',
+          fontFamily: 'Inter, "Helvetica Neue", sans-serif',
+          fontWeight: 700,
+          fontSize: 90 * s,
+          lineHeight: 0.9,
+          color: '#ffffff',
+          letterSpacing: -2,
         }}>
           <TextScramble trigger={scrambleTrigger} duration={1.0} speed={0.04} as="div">
             WORK
           </TextScramble>
         </div>
-        <div style={{
-          fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif',
-          fontWeight: 400, fontSize: 'clamp(12px, 1vw, 16px)',
-          letterSpacing: '-0.02em', color: 'var(--wp-text, #000)', marginTop: 'clamp(8px, 1vh, 16px)',
-        }}>
-          <TextScramble trigger={scrambleTrigger} duration={0.8} speed={0.03} as="div">
-            MULTI-DISCIPLINARY DESIGNER
-          </TextScramble>
-        </div>
-      </div>
 
-      {/* Left column — vertically centered: toggle, pills, ambient, HOME */}
-      <div style={{
-        position: 'absolute', top: '50%', left: 'clamp(40px, 4vw, 80px)',
-        transform: 'translateY(-50%)',
-        display: 'flex', flexDirection: 'column', gap: 0,
-      }}>
-        {/* Toggle */}
-        <div style={{
-          display: 'inline-flex', background: 'rgba(255,255,255,0.15)', borderRadius: 40,
-          padding: 3, gap: 0,
-        }}>
-          {(['exp','skill'] as const).map(m => (
-            <div key={m} onClick={() => { setMode(m); setLockedPill(null); deactivatePill(); }} style={{
-              background: mode === m ? '#fff' : 'transparent',
-              color: mode === m ? '#000' : 'rgba(255,255,255,0.5)',
-              borderRadius: 40,
-              padding: '8px 20px',
-              fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif',
-              fontWeight: 700,
-              fontSize: 11,
-              letterSpacing: '-0.02em',
-              textTransform: 'uppercase' as const,
-              whiteSpace: 'nowrap' as const,
-              cursor: 'pointer',
-              pointerEvents: 'auto',
-              transition: 'all 0.25s ease',
+        {/* Description — inline code-style highlight per line */}
+        {(() => {
+          const activeZone = hovered ? ZONE_COLORS[hovered] : null;
+          const bgColor = activeZone ? activeZone.hex : 'rgba(255,255,255,0.08)';
+          const isVeryDark = activeZone && (activeZone.r + activeZone.g + activeZone.b) < 0.3;
+          const highlightBg = isVeryDark ? 'rgba(255,255,255,0.12)' : bgColor;
+          return (
+            <div style={{
+              maxWidth: 520 * sx,
+              textAlign: 'right',
             }}>
-              {m.toUpperCase()}
-            </div>
-          ))}
-        </div>
-
-        {/* Company/Skill pills */}
-        <div style={{
-          display: 'flex', flexDirection: 'column', gap: 12, marginTop: 20,
-        }}>
-        {pills.map((pill, i) => (
-            <div key={pill.key}
-              onClick={() => handlePillClick(pill)}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                background: 'var(--wp-pill-bg, #000)',
-                color: 'var(--wp-pill-text, #fff)',
-                borderRadius: 40,
-                overflow: 'hidden',
-                opacity: hovered && hovered !== pill.key ? 0.35 : 1,
-                transition: 'all 0.3s cubic-bezier(0.22, 1, 0.36, 1)',
-                fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif',
-                fontWeight: 700,
-                fontSize: 13,
-                letterSpacing: '-0.02em',
-                textTransform: 'uppercase',
-                whiteSpace: 'nowrap',
-                boxShadow: lockedPill === pill.key ? '0 0 0 2px #fff' : 'none',
-              }}
-            >
-              <PillButton
-                onMouseEnter={() => handleEnter(pill)}
-                onMouseLeave={handleLeave}
-                style={{ padding: '12px 28px' }}
-              >
-                {pill.label}
-              </PillButton>
-            </div>
-        ))}
-        </div>
-      </div>
-
-      {/* Ambient paragraph — above HOME pill */}
-      <div style={{
-        position: 'absolute', bottom: 'clamp(90px, 12vh, 140px)', left: 'clamp(40px, 4vw, 80px)', maxWidth: 260,
-        fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif',
-        fontSize: 'clamp(11px, 1vw, 16px)', letterSpacing: '0.02em', color: 'var(--wp-text, #000)',
-        lineHeight: 1.5,
-      }}>
-        <TextScramble key={ambientKey} trigger={true} duration={0.6} speed={0.025} as="span">
-          {ambientText}
-        </TextScramble>
-      </div>
-
-      {/* HOME pill — bottom left */}
-      <div onClick={onHomePill} style={{ position: 'absolute', bottom: 'clamp(24px, 3vh, 48px)', left: 'clamp(40px, 4vw, 80px)', cursor: 'pointer', pointerEvents: 'auto' }}>
-        <div style={{ ...PILL_STYLE }}>HOME</div>
-      </div>
-
-      {/* DENSITY pill — bottom right */}
-      <div style={{ position: 'absolute', bottom: 'clamp(24px, 3vh, 48px)', right: 'clamp(24px, 2.6vw, 48px)' }}>
-        <div style={{ ...PILL_STYLE }}>{'\u2318 + / \u2318 \u2212  [DENSITY]'}</div>
-      </div>
-
-      {/* Card label overlays — positioned over particle cards */}
-      {hovered && COMPANY_PROJECTS[hovered] && cardRects.length >= 4 && (() => {
-        const zc = ZONE_COLORS[hovered];
-        const gr = zc ? Math.round(zc.r * 255) : 0;
-        const gg = zc ? Math.round(zc.g * 255) : 0;
-        const gb = zc ? Math.round(zc.b * 255) : 0;
-        return (
-        <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 10 }}>
-          {cardRects.slice(0, 4).map((rect, i) => {
-            const project = COMPANY_PROJECTS[hovered]?.[i];
-            if (!project) return null;
-            const W = typeof window !== 'undefined' ? window.innerWidth : 1440;
-            const H = typeof window !== 'undefined' ? window.innerHeight : 900;
-            const pad = 13 * (W / 1440);
-            return (
-              <div key={i} style={{
-                position: 'absolute',
-                left: rect.x, top: rect.y,
-                width: rect.w, height: rect.h,
-                overflow: 'hidden',
-                opacity: overlayVisible ? 1 : 0,
-                transition: 'opacity 0.3s ease',
+              <span style={{
+                fontFamily: 'Inter, "Helvetica Neue", sans-serif',
+                fontWeight: 400,
+                fontSize: 19 * s,
+                lineHeight: 2.0,
+                color: '#ffffff',
+                background: highlightBg,
+                padding: `${4 * s}px ${10 * s}px`,
+                borderRadius: 4 * s,
+                WebkitBoxDecorationBreak: 'clone' as any,
+                boxDecorationBreak: 'clone' as any,
+                transition: 'background 0.5s ease',
               }}>
-                {/* Gradient */}
-                <div style={{
-                  position: 'absolute',
-                  left: 0, right: 0,
-                  bottom: 0,
-                  height: '55%',
-                  background: `linear-gradient(to top right, rgba(${gr},${gg},${gb},1) 0%, rgba(${gr},${gg},${gb},0) 100%)`,
-                  pointerEvents: 'none',
-                }} />
-                {/* Labels */}
-                <div style={{
-                  position: 'absolute',
-                  left: pad,
-                  bottom: rect.h * 0.084,
-                  fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif',
-                }}>
-                  <div style={{
-                    fontSize: 12 * (H / 900),
-                    fontWeight: 700,
-                    color: 'rgba(255,255,255,0.75)',
-                    marginBottom: 2,
-                  }}>
-                    {project.title}
-                  </div>
-                  <div style={{
-                    fontSize: 10.5 * (H / 900),
-                    fontWeight: 700,
-                    color: 'rgba(255,255,255,0.45)',
-                    marginBottom: 1,
-                  }}>
-                    {project.year} · {hovered}
-                  </div>
-                  <div style={{
-                    fontSize: 10.5 * (H / 900),
-                    fontWeight: 700,
-                    color: 'rgba(255,255,255,0.35)',
-                  }}>
-                    {project.tag}
-                  </div>
-                </div>
+                <TextScramble key={descKey} trigger={true} duration={0.6} speed={0.025} as="span">
+                  {descText}
+                </TextScramble>
+              </span>
+            </div>
+          );
+        })()}
+      </div>
+
+      {/* ── Row 2: Pills + Year indicator ── */}
+      <div style={{
+        position: 'absolute',
+        bottom: 80 * sy,
+        left: leftX,
+        right: rightX,
+        zIndex: 10,
+      }}>
+        {/* Year indicator — tracks pill center */}
+        {activeYear !== null && markerX !== null && (
+          <div style={{
+            position: 'absolute',
+            top: -26 * sy,
+            left: markerX - 18 * s,
+            transition: 'left 0.4s cubic-bezier(0.22, 1, 0.36, 1)',
+            zIndex: 5,
+          }}>
+            <span style={{
+              fontFamily: 'Inter, "Helvetica Neue", sans-serif',
+              fontWeight: 500,
+              fontSize: 15 * s,
+              color: '#FF0000',
+            }}>
+              {activeYear}
+            </span>
+          </div>
+        )}
+
+        {/* Pills row — flex with gap to fill available width */}
+        <div ref={pillRowRef} style={{
+          display: 'flex',
+          flexDirection: 'row',
+          gap: 12 * sx,
+          alignItems: 'center',
+          width: '100%',
+        }}>
+          {pills.map((pill) => {
+            const isActive = hovered === pill.key;
+            const isLocked = lockedPill === pill.key;
+            const isDimmed = hovered !== null && !isActive;
+            return (
+              <div key={pill.key}
+                onClick={() => handlePillClick(pill)}
+                style={{
+                  flex: 1,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  height: 40 * s,
+                  background: isActive ? '#ffffff' : '#333333',
+                  color: isActive ? '#000000' : '#B3B3B3',
+                  borderRadius: 20 * s,
+                  fontFamily: 'Inter, "Helvetica Neue", sans-serif',
+                  fontWeight: 500,
+                  fontSize: 13 * s,
+                  whiteSpace: 'nowrap',
+                  cursor: 'pointer',
+                  opacity: isDimmed ? 0.35 : 1,
+                  transition: 'all 0.3s cubic-bezier(0.22, 1, 0.36, 1)',
+                  boxShadow: isLocked ? '0 0 0 2px rgba(255,255,255,0.8)' : 'none',
+                  pointerEvents: 'auto',
+                }}
+              >
+                <PillButton
+                  onMouseEnter={() => handleEnter(pill)}
+                  onMouseLeave={handleLeave}
+                >
+                  {pill.label}
+                </PillButton>
               </div>
             );
           })}
         </div>
-        );
-      })()}
+
+        {/* Timeline ticks — proper height, matches pills width */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'flex-end',
+          marginTop: 10 * sy,
+          width: '100%',
+          height: 24 * sy,
+        }}>
+          {Array.from({ length: TIMELINE_TICKS }).map((_, i) => {
+            const isMajor = i % 4 === 0;
+            return (
+              <div key={i} style={{
+                flex: 1,
+                display: 'flex',
+                justifyContent: 'center',
+              }}>
+                <div style={{
+                  width: 0.5,
+                  height: isMajor ? 24 * sy : 12 * sy,
+                  background: 'rgba(255,255,255,0.25)',
+                }} />
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Red vertical line from year through pills to timeline */}
+        {activeYear !== null && markerX !== null && (
+          <div style={{
+            position: 'absolute',
+            top: -4 * sy,
+            left: markerX,
+            width: 1,
+            height: `calc(100% + ${4 * sy}px)`,
+            background: '#FF0000',
+            transition: 'left 0.4s cubic-bezier(0.22, 1, 0.36, 1)',
+            zIndex: 5,
+          }} />
+        )}
+      </div>
+
+      {/* ── Row 3: EXP/SKILL toggle (left) + HOME pill (right) ── */}
+      <div style={{
+        position: 'absolute',
+        bottom: 22 * sy,
+        left: leftX,
+        right: rightX,
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        zIndex: 11,
+      }}>
+        {/* EXP/SKILL toggle */}
+        <div style={{
+          display: 'flex',
+          flexDirection: 'row',
+          borderRadius: 12 * s,
+          overflow: 'hidden',
+          background: '#404040',
+          width: 'fit-content',
+        }}>
+          <div
+            onClick={() => { setMode('exp'); deactivatePill(); }}
+            style={{
+              height: 34 * s,
+              paddingLeft: 14 * s,
+              paddingRight: 14 * s,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              background: mode === 'exp' ? '#ffffff' : 'transparent',
+              color: mode === 'exp' ? '#000000' : '#B3B3B3',
+              borderRadius: 12 * s,
+              fontFamily: 'Inter, "Helvetica Neue", sans-serif',
+              fontWeight: 500,
+              fontSize: 8.9 * s,
+              cursor: 'pointer',
+              transition: 'all 0.3s ease',
+              pointerEvents: 'auto',
+            }}
+          >
+            EXPERIENCE
+          </div>
+          <div
+            onClick={() => { setMode('skill'); deactivatePill(); }}
+            style={{
+              height: 34 * s,
+              paddingLeft: 14 * s,
+              paddingRight: 14 * s,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              background: mode === 'skill' ? '#ffffff' : 'transparent',
+              color: mode === 'skill' ? '#000000' : '#B3B3B3',
+              borderRadius: 12 * s,
+              fontFamily: 'Inter, "Helvetica Neue", sans-serif',
+              fontWeight: 500,
+              fontSize: 8.9 * s,
+              cursor: 'pointer',
+              transition: 'all 0.3s ease',
+              pointerEvents: 'auto',
+            }}
+          >
+            SKILL
+          </div>
+        </div>
+
+        {/* HOME pill */}
+        <div onClick={onHomePill} style={{
+          cursor: 'pointer',
+          pointerEvents: 'auto',
+        }}>
+          <div style={{
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            background: '#ffffff', color: '#000000', borderRadius: 40,
+            padding: `${10 * s}px ${30 * s}px`,
+            fontFamily: 'Inter, "Helvetica Neue", sans-serif',
+            fontWeight: 600, fontSize: 14 * s,
+            textTransform: 'uppercase', whiteSpace: 'nowrap',
+          }}>
+            <PillButton onClick={onHomePill}>HOME</PillButton>
+          </div>
+        </div>
+      </div>
     </div>
   );
 });

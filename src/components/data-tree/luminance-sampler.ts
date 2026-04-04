@@ -52,13 +52,34 @@ export function sampleLuminance(imageUrl: string): Promise<Float32Array> {
       const imageData = ctx.getImageData(0, 0, CARD_COLS, CARD_ROWS);
       const pixels = imageData.data; // RGBA flat array
 
-      const grid = new Float32Array(CARD_COLS * CARD_ROWS);
-      for (let i = 0; i < CARD_COLS * CARD_ROWS; i++) {
+      const totalCells = CARD_COLS * CARD_ROWS;
+      const raw = new Float32Array(totalCells);
+
+      // Pass 1: extract raw luminance
+      let minL = 1, maxL = 0;
+      for (let i = 0; i < totalCells; i++) {
         const r = pixels[i * 4];
         const g = pixels[i * 4 + 1];
         const b = pixels[i * 4 + 2];
-        // Perceptual luminance (ITU-R BT.709)
-        grid[i] = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+        const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+        raw[i] = lum;
+        if (lum < minL) minL = lum;
+        if (lum > maxL) maxL = lum;
+      }
+
+      // Pass 2: contrast stretch + gamma boost
+      // The shader's terrain/depth fade reduces card alpha to ~0.2–0.55,
+      // so we need aggressive boosting for the image to read through.
+      const range = maxL - minL || 1;
+      const grid = new Float32Array(totalCells);
+      for (let i = 0; i < totalCells; i++) {
+        // Normalize to full 0–1 range
+        let v = (raw[i] - minL) / range;
+        // Gamma boost (lift shadows, expand mid-tones)
+        v = Math.pow(v, 0.45);
+        // Map to opacity range: 0.15 floor so dark areas are faint but present,
+        // 1.0 ceiling so bright areas punch through the shader's fade
+        grid[i] = 0.15 + v * 0.85;
       }
 
       luminanceCache.set(imageUrl, grid);
