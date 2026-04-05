@@ -1,7 +1,7 @@
 // ── Projection ───────────────────────────────────────────────────────────────
 export const FOV = 900;
 export const CAMERA_Z_OFFSET = 280;
-export const SCENE_SCALE_FACTOR = 0.78; // min(W,H) * this
+export const SCENE_SCALE_FACTOR = 0.70; // min(W,H) * this — shrunk to clear bottom footer
 
 // ── Spring physics (cursor repulsion) ────────────────────────────────────────
 export const REPEL_R = 140;

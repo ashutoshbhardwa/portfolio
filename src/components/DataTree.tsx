@@ -269,6 +269,8 @@ export default function DataTree() {
   const navRef = useRef<HTMLDivElement>(null);
   const densityPillRef = useRef<HTMLDivElement>(null);
   const blurRectRef = useRef<HTMLDivElement>(null);
+  const densityUpRef = useRef<() => void>(() => {});
+  const densityDownRef = useRef<() => void>(() => {});
 
   // Work page state
   const [workVisible, setWorkVisible] = useState(false);
@@ -913,23 +915,12 @@ export default function DataTree() {
         // Never let star screen block WorkPage clicks
         starScreenRef.current.style.pointerEvents = 'none';
       }
-      if (paraRef.current) {
-        paraRef.current.style.opacity = String(overlayOpacity);
-      }
-      // Subtitle overlay
-      const subtitleEl = container.querySelector('.subtitle-overlay') as HTMLElement;
-      if (subtitleEl) {
-        subtitleEl.style.opacity = String(overlayOpacity);
-      }
+      // paraRef and subtitle are now nested inside nameRef — inherit its opacity
       if (workPillRef.current) {
         workPillRef.current.style.opacity = String(overlayOpacity);
         workPillRef.current.style.pointerEvents = overlayOpacity > 0.1 ? 'auto' : 'none';
       }
-      // Downward arrow
-      const arrowEl = container.querySelector('.pill-arrow') as HTMLElement;
-      if (arrowEl) {
-        arrowEl.style.opacity = String(overlayOpacity);
-      }
+      // Arrow is now inside workPillRef — inherits its opacity
       // Vignette: visible in scatter, fades as tree forms
       if (vignetteRef.current) {
         const vigOp = clamp(1 - (progress - 0.6) / 0.25, 0, 0.8);
@@ -943,6 +934,11 @@ export default function DataTree() {
         densityPillRef.current.style.opacity = String(overlayOpacity);
         densityPillRef.current.style.pointerEvents = overlayOpacity > 0.1 ? 'auto' : 'none';
       }
+      // AB mark + scroll line follow same overlay opacity
+      const abMark = container.querySelector('.ab-mark') as HTMLElement | null;
+      if (abMark) abMark.style.opacity = String(overlayOpacity);
+      const scrollLine = container.querySelector('.scroll-line') as HTMLElement | null;
+      if (scrollLine) scrollLine.style.opacity = String(overlayOpacity * 0.5);
 
       // ── Color logic: smooth lerp background + particle tint on zone hover ──
       // EXPERIENCE: background floods with brand color, particles stay dark,
@@ -966,25 +962,23 @@ export default function DataTree() {
       const g255 = Math.round(cs.g * 255);
       const b255 = Math.round(cs.b * 255);
 
-      // Helper: target the INNER child div for refs whose style lives on a nested element
-      // nameRef, workPillRef, subtitle-overlay all have their colors on a child div
-      const nameInner = nameRef.current?.querySelector('div') as HTMLElement | null;
-      const subtitleInner = (container.querySelector('.subtitle-overlay') as HTMLElement)?.querySelector('div') as HTMLElement | null;
-      const workPillInner = workPillRef.current?.querySelector('div') as HTMLElement | null;
-      // navRef and densityPillRef have their styles directly on the ref'd element
+      // Target the actual elements for color changes
+      const nameTextEl = container.querySelector('.home-name-text') as HTMLElement | null;
+      const subtitleEl = container.querySelector('.subtitle-overlay') as HTMLElement | null;
+      const paraTextEl = container.querySelector('.home-para-text') as HTMLElement | null;
       const arrowSvg = container.querySelector('.pill-arrow svg') as SVGElement | null;
 
       if (cs.strength > 0.005) {
         const bgR = 249 / 255;
         const bgG = 248 / 255;
         const bgB = 244 / 255;
-
-        // DailyObjects special case: bg is black, so watermark should be LIGHTER (white tint)
         const isDailyObjects = cs.activeZone === 'DAILYOBJECTS';
         const brandLum = 0.299 * cs.r + 0.587 * cs.g + 0.114 * cs.b;
+        // Is the bg effectively dark? (DailyObjects=black, or very dark brand)
+        const bgIsDark = isDailyObjects || brandLum < 0.15;
 
         if (isExperience) {
-          // ── EXPERIENCE: background flood only on home screen (pre-work) ──
+          // ── EXPERIENCE: background floods with brand color ──
           if (progress < 1.0) {
             const mixR = Math.round((bgR + (cs.r - bgR) * cs.strength) * 255);
             const mixG = Math.round((bgG + (cs.g - bgG) * cs.strength) * 255);
@@ -993,8 +987,7 @@ export default function DataTree() {
             if (blurRectRef.current) blurRectRef.current.style.background = `rgb(${mixR},${mixG},${mixB})`;
           }
 
-          // Particles stay dark (no tint) — they contrast against colored bg
-          // Exception: DailyObjects (black bg) → particles should go white
+          // Particles: DailyObjects → white, others → stay dark
           if (isDailyObjects) {
             particleMat.uniforms.uTintColor.value.set(1, 1, 1);
             particleMat.uniforms.uTintStrength.value = cs.strength;
@@ -1002,39 +995,36 @@ export default function DataTree() {
             particleMat.uniforms.uTintStrength.value = 0;
           }
 
-          // All text → white for contrast
-          if (nameInner) nameInner.style.color = '#FFFFFF';
-          if (subtitleInner) subtitleInner.style.color = '#FFFFFF';
-          if (paraRef.current) paraRef.current.style.color = 'rgba(255,255,255,0.55)';
+          // ALL overlay UI → white (contrasts against colored/dark bg)
+          if (nameTextEl) nameTextEl.style.color = '#FFFFFF';
+          if (subtitleEl) subtitleEl.style.color = '#FFFFFF';
 
-          // Watermark: darker tint of brand color; exception: DailyObjects → lighter (white)
-          if (watermarkRef.current) {
-            if (isDailyObjects || brandLum < 0.15) {
-              // Dark background → lighter watermark
-              watermarkRef.current.style.color = `rgba(255,255,255,0.18)`;
+          // Paragraph: dark bg brands → white container / black text; light bg brands → white text / brand bg
+          if (paraTextEl) {
+            if (bgIsDark) {
+              paraTextEl.style.color = '#000000';
+              paraTextEl.style.background = '#FFFFFF';
             } else {
-              // Colored bg → darker tint of brand
-              const darkR = Math.round(cs.r * 0.6 * 255);
-              const darkG = Math.round(cs.g * 0.6 * 255);
-              const darkB = Math.round(cs.b * 0.6 * 255);
-              watermarkRef.current.style.color = `rgba(${darkR},${darkG},${darkB},0.35)`;
+              paraTextEl.style.color = '#FFFFFF';
+              paraTextEl.style.background = `rgba(${Math.round(cs.r * 0.3 * 255)},${Math.round(cs.g * 0.3 * 255)},${Math.round(cs.b * 0.3 * 255)},0.85)`;
             }
           }
 
-          // Pills → white bg, dark text for contrast
-          if (workPillInner) {
-            workPillInner.style.background = '#FFFFFF';
-            workPillInner.style.color = '#000000';
+          // Watermark
+          if (watermarkRef.current) {
+            watermarkRef.current.style.color = bgIsDark
+              ? 'rgba(255,255,255,0.18)'
+              : `rgba(${Math.round(cs.r * 0.6 * 255)},${Math.round(cs.g * 0.6 * 255)},${Math.round(cs.b * 0.6 * 255)},0.35)`;
           }
-          if (navRef.current) {
-            navRef.current.style.background = '#FFFFFF';
-            navRef.current.style.color = '#000000';
-          }
-          if (densityPillRef.current) {
-            densityPillRef.current.style.background = '#FFFFFF';
-            densityPillRef.current.style.color = '#000000';
-          }
-          // Arrow SVG → white
+
+          // Pills + scroll indicators + marks → white
+          if (densityPillRef.current) { densityPillRef.current.style.background = '#FFFFFF'; densityPillRef.current.style.color = '#000000'; }
+          const sDash = container.querySelector('.scroll-dash') as HTMLElement | null;
+          if (sDash) sDash.style.background = '#FFFFFF';
+          const abMarkExp = container.querySelector('.ab-mark') as HTMLElement | null;
+          if (abMarkExp) abMarkExp.style.color = '#FFFFFF';
+          const scrollLineExp = container.querySelector('.scroll-line') as HTMLElement | null;
+          if (scrollLineExp) scrollLineExp.style.background = '#FFFFFF';
           if (arrowSvg) {
             arrowSvg.querySelectorAll('path').forEach(p => {
               p.setAttribute('stroke', '#FFFFFF');
@@ -1042,36 +1032,24 @@ export default function DataTree() {
             });
           }
         } else {
-          // ── SKILL: particles + overlays change color (bg handled by progress-based transition) ──
-
-          // Particles tint to brand color
+          // ── SKILL: bg stays white, particles + overlays change to brand color ──
           particleMat.uniforms.uTintColor.value.set(cs.r, cs.g, cs.b);
           particleMat.uniforms.uTintStrength.value = cs.strength;
 
-          // Overlays change to brand color
-          if (nameInner) nameInner.style.color = `rgb(${r255},${g255},${b255})`;
-          if (subtitleInner) subtitleInner.style.color = `rgb(${r255},${g255},${b255})`;
-          if (paraRef.current) paraRef.current.style.color = `rgba(${r255},${g255},${b255},0.45)`;
-
-          // Watermark: brand color, slightly transparent
-          if (watermarkRef.current) {
-            watermarkRef.current.style.color = `rgba(${r255},${g255},${b255},0.22)`;
+          if (nameTextEl) nameTextEl.style.color = `rgb(${r255},${g255},${b255})`;
+          if (subtitleEl) subtitleEl.style.color = `rgb(${r255},${g255},${b255})`;
+          if (paraTextEl) {
+            paraTextEl.style.color = '#FFFFFF';
+            paraTextEl.style.background = `rgb(${r255},${g255},${b255})`;
           }
-
-          // Pills: change to brand color bg
-          if (workPillInner) {
-            workPillInner.style.background = `rgb(${r255},${g255},${b255})`;
-            workPillInner.style.color = '#FFFFFF';
-          }
-          if (navRef.current) {
-            navRef.current.style.background = `rgb(${r255},${g255},${b255})`;
-            navRef.current.style.color = '#FFFFFF';
-          }
-          if (densityPillRef.current) {
-            densityPillRef.current.style.background = `rgb(${r255},${g255},${b255})`;
-            densityPillRef.current.style.color = '#FFFFFF';
-          }
-          // Arrow SVG → brand color
+          if (watermarkRef.current) watermarkRef.current.style.color = `rgba(${r255},${g255},${b255},0.22)`;
+          if (densityPillRef.current) { densityPillRef.current.style.background = `rgb(${r255},${g255},${b255})`; densityPillRef.current.style.color = '#FFFFFF'; }
+          const sDash2 = container.querySelector('.scroll-dash') as HTMLElement | null;
+          if (sDash2) sDash2.style.background = `rgb(${r255},${g255},${b255})`;
+          const abMarkSkill = container.querySelector('.ab-mark') as HTMLElement | null;
+          if (abMarkSkill) abMarkSkill.style.color = `rgb(${r255},${g255},${b255})`;
+          const scrollLineSkill = container.querySelector('.scroll-line') as HTMLElement | null;
+          if (scrollLineSkill) scrollLineSkill.style.background = `rgb(${r255},${g255},${b255})`;
           if (arrowSvg) {
             arrowSvg.querySelectorAll('path').forEach(p => {
               p.setAttribute('stroke', `rgb(${r255},${g255},${b255})`);
@@ -1080,27 +1058,22 @@ export default function DataTree() {
           }
         }
       } else {
-        // ── Reset to defaults (bg handled by progress-based transition) ──
+        // ── DEFAULT: white bg, black UI, paragraph = black bg white text ──
         cs.activeZone = null;
         cs.zoneType = null;
         particleMat.uniforms.uTintStrength.value = 0;
-        if (nameInner) nameInner.style.color = '#0A0A0A';
-        if (subtitleInner) subtitleInner.style.color = 'rgb(10,10,10)';
-        if (paraRef.current) paraRef.current.style.color = 'rgba(0,0,0,0.45)';
+        if (nameTextEl) nameTextEl.style.color = '#0A0A0A';
+        if (subtitleEl) subtitleEl.style.color = 'rgb(10,10,10)';
+        if (paraTextEl) { paraTextEl.style.color = '#FFFFFF'; paraTextEl.style.background = '#0A0A0A'; }
         if (watermarkRef.current) watermarkRef.current.style.color = 'rgba(10,10,10,0.22)';
-        if (workPillInner) {
-          workPillInner.style.background = '#000000';
-          workPillInner.style.color = '#FFFFFF';
-        }
-        if (navRef.current) {
-          navRef.current.style.background = 'rgb(0,0,0)';
-          navRef.current.style.color = 'rgb(241,241,241)';
-        }
-        if (densityPillRef.current) {
-          densityPillRef.current.style.background = '#000000';
-          densityPillRef.current.style.color = '#ffffff';
-        }
-        // Arrow SVG → default dark
+        if (densityPillRef.current) { densityPillRef.current.style.background = '#000000'; densityPillRef.current.style.color = '#ffffff'; }
+        // Scroll arrow, dash, AB mark, scroll line
+        const scrollDash = container.querySelector('.scroll-dash') as HTMLElement | null;
+        if (scrollDash) scrollDash.style.background = '#0A0A0A';
+        const abMarkDef = container.querySelector('.ab-mark') as HTMLElement | null;
+        if (abMarkDef) abMarkDef.style.color = '#0A0A0A';
+        const scrollLineDef = container.querySelector('.scroll-line') as HTMLElement | null;
+        if (scrollLineDef) scrollLineDef.style.background = '#0A0A0A';
         if (arrowSvg) {
           arrowSvg.querySelectorAll('path').forEach(p => {
             p.setAttribute('stroke', '#0A0A0A');
@@ -1156,6 +1129,12 @@ export default function DataTree() {
       } else if (progress < 1.3 && workVisibleRef.current) {
         workVisibleRef.current = false;
         setWorkVisible(false);
+        // Force-reset color state when leaving work page via scroll
+        const cs = colorStateRef.current;
+        cs.targetStrength = 0;
+        cs.strength = 0;
+        cs.activeZone = null;
+        cs.zoneType = null;
       }
     }
 
@@ -1211,6 +1190,20 @@ export default function DataTree() {
       }
     };
     window.addEventListener('keydown', onKeyDown);
+
+    // Expose density controls via refs for clickable +/- buttons
+    densityUpRef.current = () => {
+      if (cardFormingRef.current || cardDisintegratingRef.current) return;
+      densityScale = Math.min(densityScale + 0.15, 2.5);
+      particleMat.uniforms.uDensityScale.value = densityScale;
+      updateDensityHint();
+    };
+    densityDownRef.current = () => {
+      if (cardFormingRef.current || cardDisintegratingRef.current) return;
+      densityScale = Math.max(densityScale - 0.15, 0.3);
+      particleMat.uniforms.uDensityScale.value = densityScale;
+      updateDensityHint();
+    };
 
     // Show hint label briefly when density changes
     function updateDensityHint() {
@@ -1695,50 +1688,17 @@ export default function DataTree() {
         />
       </div>
 
-      {/* WORK pill — bottom-left, aligned with density pill */}
-      <div
-        ref={workPillRef}
-        onClick={() => { targetProgressRef.current = 1.50; }}
-        style={{
-          position: 'absolute',
-          bottom: 'clamp(32px, 8vh, 135px)',
-          left: 'clamp(40px, 4.2vw, 80px)',
-          zIndex: 5,
-          opacity: 0,
-          pointerEvents: 'none',
-          cursor: 'pointer',
-        }}
-      >
-        <div
-          style={{
-            background: '#000000',
-            color: '#ffffff',
-            fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif',
-            fontWeight: 700,
-            fontSize: 'clamp(14px, 1.17vw, 22px)',
-            letterSpacing: '-0.05em',
-            padding: 'clamp(12px, 1vw, 16px) clamp(36px, 3.5vw, 68px)',
-            borderRadius: 27,
-            cursor: 'pointer',
-            pointerEvents: 'auto',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
-          <PillButton>WORK</PillButton>
-        </div>
-      </div>
+      {/* ═══════════ BOTTOM SECTION — matching work page aesthetic ═══════════ */}
 
-      {/* Frosted blur rectangle behind name — Figma 8058:8882 */}
+      {/* Frosted blur rectangle behind bottom content */}
       <div
         ref={blurRectRef}
         style={{
           position: 'absolute',
-          top: 'clamp(-60px, -8.4vh, -91px)',
-          left: 'clamp(-180px, -14.7vw, -282px)',
-          width: 'clamp(760px, 66vw, 1269px)',
-          height: 'clamp(250px, 38vh, 410px)',
+          bottom: '-5vh',
+          left: '-5vw',
+          width: '110vw',
+          height: 'clamp(200px, 32vh, 340px)',
           background: '#F9F8F4',
           filter: 'blur(clamp(44px, 3.75vw, 72px))',
           zIndex: 1,
@@ -1746,89 +1706,132 @@ export default function DataTree() {
         }}
       />
 
-      {/* Top-left identity — Figma HEADER group 8060:29306 */}
+      {/* ── Bottom row: Name (left) | WORK pill (center) | Paragraph (right) — all bottoms aligned ── */}
       <div
         ref={nameRef}
         style={{
           position: 'absolute',
-          top: 'clamp(20px, 2.2vh, 40px)',
+          bottom: 'clamp(36px, 5vh, 70px)',
           left: 'clamp(40px, 4.2vw, 80px)',
+          right: 'clamp(40px, 4.2vw, 80px)',
           zIndex: 4,
           pointerEvents: 'none',
           opacity: 0,
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'flex-end',
         }}
       >
-        <div style={{
-          fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif',
-          fontWeight: 900,
-          fontSize: 'clamp(42px, 6.5vh, 90px)',
-          lineHeight: 0.88,
-          letterSpacing: '-0.05em',
-          color: '#0A0A0A',
-        }}>
-          <TextScramble trigger={homepageRevealed} duration={1.2} speed={0.05} as="span">ASHUTOSH</TextScramble>
-          <br />
-          <TextScramble trigger={homepageRevealed} duration={1.2} speed={0.05} as="span">BHARDWAJ</TextScramble>
+        {/* Left: Subtitle above Name (Figma order) */}
+        <div style={{ flexShrink: 0 }}>
+          <div className="subtitle-overlay" style={{
+            fontFamily: 'Inter, "Helvetica Neue", Helvetica, Arial, sans-serif',
+            fontWeight: 400,
+            fontSize: 'clamp(14px, 1.2vw, 22px)',
+            letterSpacing: '0em',
+            textTransform: 'uppercase',
+            marginBottom: 'clamp(8px, 1.2vh, 16px)',
+          }}>
+            <TextScramble trigger={homepageRevealed} duration={0.8} speed={0.04}>MULTI-DISCIPLINARY DESIGNER</TextScramble>
+          </div>
+          <div className="home-name-text" style={{
+            fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif',
+            fontWeight: 900,
+            fontSize: 'clamp(63px, 9.75vh, 135px)',
+            lineHeight: 0.88,
+            letterSpacing: '-0.05em',
+          }}>
+            <TextScramble trigger={homepageRevealed} duration={1.2} speed={0.05} as="span">ASHUTOSH</TextScramble>
+            <br />
+            <TextScramble trigger={homepageRevealed} duration={1.2} speed={0.05} as="span">BHARDWAJ</TextScramble>
+          </div>
+        </div>
+
+        {/* Center: Scroll arrow indicator (replaces WORK pill) */}
+        <div
+          ref={workPillRef}
+          onClick={() => { targetProgressRef.current = 1.50; }}
+          style={{
+            cursor: 'pointer',
+            pointerEvents: 'auto',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: 6,
+            flexShrink: 0,
+            marginBottom: 4,
+          }}
+        >
+          {/* Horizontal dash */}
+          <div className="scroll-dash" style={{
+            width: 24,
+            height: 2,
+            background: '#0A0A0A',
+            borderRadius: 1,
+            transition: 'background 0.5s ease',
+          }} />
+          {/* Double chevron arrow */}
+          <div className="pill-arrow" style={{ pointerEvents: 'none' }}>
+            <svg width="16" height="24" viewBox="0 0 16 24" fill="none" style={{ animation: 'arrowNudge 3s ease-out infinite' }}>
+              <path d="M2 2L8 9L14 2" stroke="#0A0A0A" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+              <path d="M2 12L8 19L14 12" stroke="#0A0A0A" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+            </svg>
+          </div>
+        </div>
+
+        {/* Right: Contextual paragraph — black highlight with white text */}
+        <div
+          ref={paraRef}
+          style={{
+            maxWidth: 'clamp(280px, 36vw, 520px)',
+            textAlign: 'right',
+            flexShrink: 0,
+          }}
+        >
+          <span className="home-para-text" style={{
+            fontFamily: 'Inter, "Helvetica Neue", sans-serif',
+            fontWeight: 400,
+            fontSize: 'clamp(14px, 1.32vw, 19px)',
+            lineHeight: 2.0,
+            color: '#FFFFFF',
+            background: '#0A0A0A',
+            padding: '4px 10px',
+            borderRadius: 4,
+            WebkitBoxDecorationBreak: 'clone' as any,
+            boxDecorationBreak: 'clone' as any,
+            transition: 'background 0.5s ease, color 0.5s ease',
+          }}>
+            <TextScramble key={ambientKey} trigger={true} duration={0.6} speed={0.03} as="span">
+              {ambientText}
+            </TextScramble>
+          </span>
         </div>
       </div>
 
-      {/* Subtitle — Figma 8058:8888 — positioned below name block */}
+      {/* ═══════════ TOP-LEFT: AB 2025 branding ═══════════ */}
       <div
+        className="ab-mark"
         style={{
           position: 'absolute',
-          top: 'clamp(128px, 17vh, 184px)',
-          left: 'clamp(40px, 4.2vw, 80px)',
-          zIndex: 4,
-          pointerEvents: 'none',
-          opacity: 0,
-        }}
-        className="subtitle-overlay"
-      >
-        <div style={{
-          fontFamily: 'Inter, "Helvetica Neue", Helvetica, Arial, sans-serif',
-          fontWeight: 400,
-          fontSize: 'clamp(11px, 0.9vw, 17px)',
-          letterSpacing: '0em',
-          color: 'rgb(10,10,10)',
-          textTransform: 'uppercase',
-          marginTop: 'clamp(10px, 1.5vh, 20px)',
-        }}>
-          <TextScramble trigger={homepageRevealed} duration={0.8} speed={0.04}>MULTI-DISCIPLINARY DESIGNER</TextScramble>
-        </div>
-      </div>
-
-      {/* Contextual paragraph — above WORK pill */}
-      <div
-        ref={paraRef}
-        style={{
-          position: 'absolute',
-          bottom: 'clamp(120px, 16vh, 260px)',
-          left: 'clamp(40px, 4.2vw, 80px)',
-          maxWidth: 280,
+          top: 'clamp(24px, 3vh, 48px)',
+          left: 'clamp(24px, 2.6vw, 48px)',
           zIndex: 5,
-          pointerEvents: 'none',
+          fontFamily: 'Inter, "Helvetica Neue", Helvetica, Arial, sans-serif',
+          fontWeight: 500,
+          fontSize: 'clamp(10px, 0.77vw, 13px)',
+          letterSpacing: '0.04em',
+          color: '#0A0A0A',
           opacity: 0,
-          fontFamily: 'Inter, sans-serif',
-          fontWeight: 400,
-          fontSize: 'clamp(11px, 1vw, 16px)',
-          lineHeight: 1.21,
-          letterSpacing: '0em',
-          color: 'rgba(0,0,0,0.45)',
-          textTransform: 'uppercase',
-          wordBreak: 'break-word',
-          overflow: 'hidden',
-          maxHeight: 130,
+          pointerEvents: 'none',
+          transition: 'color 0.5s ease',
         }}
       >
-        <TextScramble key={ambientKey} trigger={true} duration={0.6} speed={0.03}>{ambientText}</TextScramble>
+        AB 2025
       </div>
 
-
-
-
-      {/* ABOUT / CONTACT nav — Figma 8060:29316 */}
+      {/* ═══════════ TOP-RIGHT: Density pill ═══════════ */}
       <div
-        ref={navRef}
+        ref={densityPillRef}
         style={{
           position: 'absolute',
           top: 'clamp(24px, 3vh, 48px)',
@@ -1837,78 +1840,67 @@ export default function DataTree() {
           opacity: 0,
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'center',
-          gap: 40,
-          width: 207,
-          height: 53,
-          background: 'rgb(0,0,0)',
-          backdropFilter: 'blur(14px)',
-          borderRadius: 90,
-          fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif',
-          fontWeight: 700,
-          fontSize: 12.6,
-          lineHeight: 1.4,
-          letterSpacing: '-0.025em',
-          color: 'rgb(241,241,241)',
-          textTransform: 'uppercase',
-          whiteSpace: 'nowrap',
-          overflow: 'hidden',
-          cursor: 'pointer',
-        }}
-      >
-        <PillButton onClick={() => window.open('mailto:ashutoshbhardwaj.design@gmail.com', '_self')}>ABOUT</PillButton>
-        <PillButton onClick={() => window.open('mailto:ashutoshbhardwaj.design@gmail.com', '_self')}>CONTACT</PillButton>
-      </div>
-
-      {/* Density pill bottom-right — Figma 8060:29309 */}
-      <div
-        ref={densityPillRef}
-        style={{
-          position: 'absolute',
-          bottom: 'clamp(24px, 3vh, 48px)',
-          right: 'clamp(24px, 2.6vw, 48px)',
-          zIndex: 5,
-          opacity: 0,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
+          gap: 0,
           background: '#000000',
           borderRadius: 27,
-          padding: 'clamp(6px, 0.56vw, 8px) clamp(14px, 1.3vw, 25px)',
+          padding: '4px',
           fontFamily: 'Inter, "Helvetica Neue", Helvetica, Arial, sans-serif',
-          fontWeight: 400,
-          fontSize: 'clamp(10px, 0.77vw, 14.7px)',
+          fontWeight: 500,
+          fontSize: 'clamp(11px, 0.83vw, 15px)',
           color: '#ffffff',
           whiteSpace: 'nowrap',
           pointerEvents: 'none',
         }}
       >
-        <PillButton>{'\u2318 + / \u2318 \u2212  [DENSITY]'}</PillButton>
+        <div
+          onClick={() => densityDownRef.current()}
+          style={{
+            width: 36, height: 36,
+            borderRadius: '50%',
+            background: 'rgba(255,255,255,0.12)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: 'pointer', pointerEvents: 'auto',
+            fontSize: 18, fontWeight: 300, userSelect: 'none',
+            transition: 'background 0.2s',
+          }}
+          onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.25)')}
+          onMouseLeave={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.12)')}
+        >−</div>
+        <div style={{ padding: '6px 16px', letterSpacing: '0.08em', fontSize: 'clamp(10px, 0.77vw, 13px)' }}>
+          DENSITY
+        </div>
+        <div
+          onClick={() => densityUpRef.current()}
+          style={{
+            width: 36, height: 36,
+            borderRadius: '50%',
+            background: 'rgba(255,255,255,0.12)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: 'pointer', pointerEvents: 'auto',
+            fontSize: 18, fontWeight: 300, userSelect: 'none',
+            transition: 'background 0.2s',
+          }}
+          onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.25)')}
+          onMouseLeave={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.12)')}
+        >+</div>
       </div>
 
-      {/* Downward double-chevron arrow — centered, aligned with pills */}
+      {/* ═══════════ BOTTOM-CENTER: Scroll line ═══════════ */}
       <div
-        className="pill-arrow"
+        className="scroll-line"
         style={{
           position: 'absolute',
-          bottom: 135,
+          bottom: 'clamp(8px, 1.2vh, 18px)',
           left: '50%',
           transform: 'translateX(-50%)',
-          zIndex: 5,
-          opacity: 0,
-          pointerEvents: 'none',
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          gap: 0,
+          width: 1,
+          height: 'clamp(8px, 1.3vh, 14px)',
+          background: '#0A0A0A',
+          zIndex: 4,
+          opacity: 0.5,
+          transition: 'background 0.5s ease',
         }}
-      >
-        {/* Two stacked triangles */}
-        <svg width="24" height="36" viewBox="0 0 24 36" fill="none" style={{ animation: 'arrowNudge 3s ease-out infinite' }}>
-          <path d="M2 2L12 14L22 2" stroke="#0A0A0A" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" fill="#0A0A0A" />
-          <path d="M2 18L12 30L22 18" stroke="#0A0A0A" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-        </svg>
-      </div>
+      />
 
       {/* Watermark overlay for easter egg hover zones */}
       <div
@@ -2039,10 +2031,16 @@ export default function DataTree() {
         onLeaveZone={() => hideWatermark()}
         onHomePill={() => {
           // Clear hover so card state machine sees wantCompany=null
-          // This triggers natural disintegration as progress lerps down
           hoveredCardRef.current = null;
           setHoveredCompany(null);
-          // Clear tint
+          // Force-reset ALL color state so zone colors don't bleed into homepage
+          hideWatermark();
+          const cs = colorStateRef.current;
+          cs.targetStrength = 0;
+          cs.strength = 0;
+          cs.activeZone = null;
+          cs.zoneType = null;
+          // Clear tint + glow
           if (particleMatRef.current) {
             particleMatRef.current.uniforms.uTintStrength.value = 0;
           }
