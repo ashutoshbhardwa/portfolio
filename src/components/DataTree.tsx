@@ -151,9 +151,9 @@ function assignDigit(darkness: number): number {
 
 // ── Card target computation ──────────────────────────────────────────────────
 
-const PARTICLES_PER_CARD = 5600;  // 100 × 56 — high-res LED screen, no overlap
-const CARD_COLS = 100;
-const CARD_ROWS = 56;
+const PARTICLES_PER_CARD = 11200;  // 140 × 80 — 2x density for higher resolution
+const CARD_COLS = 140;
+const CARD_ROWS = 80;
 
 export interface CardRect { x: number; y: number; w: number; h: number }
 
@@ -219,10 +219,11 @@ function computeCardTargets(
             const yFade = Math.max(0.3, Math.min(1, worldY / 0.25));
             terrainFade = distFade * distFade * yFade;
           }
-          // Boost opacity to counteract terrain fade (cap at 12x to avoid blowout)
+          // Boost opacity to counteract terrain fade + 2.5x brightness multiplier
           // Fragment shader discards when vAlpha < 0.02, so we need the boost
           // to keep vAlpha * vFadeOpacity above the visible threshold
-          opBuf[pi] = terrainFade > 0.005 ? Math.min(1.0 / terrainFade, 12.0) : 12.0;
+          const baseBrightness = 2.5; // 150% brighter than original
+          opBuf[pi] = terrainFade > 0.005 ? Math.min(baseBrightness / terrainFade, 30.0) : 30.0;
         }
       }
     }
@@ -268,6 +269,7 @@ export default function DataTree() {
   const vignetteRef = useRef<HTMLDivElement>(null);
   const navRef = useRef<HTMLDivElement>(null);
   const densityPillRef = useRef<HTMLDivElement>(null);
+  const modeToggleRef = useRef<HTMLDivElement>(null);
   const blurRectRef = useRef<HTMLDivElement>(null);
   const densityUpRef = useRef<() => void>(() => {});
   const densityDownRef = useRef<() => void>(() => {});
@@ -281,6 +283,10 @@ export default function DataTree() {
   // Ambient text state
   const [ambientText, setAmbientText] = useState(DEFAULT_AMBIENT);
   const [ambientKey, setAmbientKey] = useState('default');
+
+  // Dark / Light mode toggle
+  const [isDarkMode, setIsDarkMode] = useState(false);
+  const isDarkModeRef = useRef(false);
 
   // Homepage reveal — triggers scramble + pill expansion when overlays first become visible
   const [homepageRevealed, setHomepageRevealed] = useState(false);
@@ -410,7 +416,7 @@ export default function DataTree() {
     let dataLoaded = false;
     let rafId = 0;
     let hasInitiallyFormed = false;  // true after first scatter→tree animation completes
-    let densityScale = 1.0; // user-controlled font size multiplier
+    let densityScale = 3.0; // default visible density
     let treeFormedAt: number | null = null;
     let scrollUnlocked = false;
     // Particle buffers (set after data load)
@@ -881,13 +887,35 @@ export default function DataTree() {
     function updateOverlays() {
       // SCROLL text — visible pre-interaction, fades as tree forms
       if (hintEl) {
-        if (progress >= 0.85) {
+        if (progress >= 0.85 || interacted) {
           hintEl.style.opacity = '0';
-        } else if (!interacted) {
+          hintEl.style.pointerEvents = 'none';
+        } else {
           hintEl.style.opacity = String(0.7 + 0.1 * Math.sin(time * 1.8));
+          hintEl.style.pointerEvents = 'auto';
         }
         if (dotEl)
           dotEl.style.transform = `scaleY(${0.5 + 0.5 * Math.sin(time * 3.2)})`;
+
+        // Update onboarding pill colors per mode
+        const dark = isDarkModeRef.current;
+        const obModePill = container.querySelector('.onboard-mode-pill') as HTMLElement | null;
+        const obDensityPill = container.querySelector('.onboard-density-pill') as HTMLElement | null;
+        const scrollText = hintEl?.querySelector('.glitch-text') as HTMLElement | null;
+        if (obModePill) {
+          obModePill.style.background = dark ? '#FFFFFF' : '#000000';
+          obModePill.style.color = dark ? '#000000' : '#FFFFFF';
+        }
+        if (obDensityPill) {
+          obDensityPill.style.background = dark ? '#FFFFFF' : '#000000';
+          obDensityPill.style.color = dark ? '#000000' : '#FFFFFF';
+        }
+        if (scrollText) {
+          scrollText.style.color = dark ? '#FFFFFF' : '#000000';
+        }
+        if (dotEl) {
+          dotEl.style.background = dark ? 'rgba(255,255,255,0.18)' : 'rgba(0,0,0,0.18)';
+        }
       }
 
       // Unified show/hide formula for all overlays
@@ -930,24 +958,39 @@ export default function DataTree() {
         navRef.current.style.opacity = String(overlayOpacity);
         navRef.current.style.pointerEvents = overlayOpacity > 0.1 ? 'auto' : 'none';
       }
+      // Density pill + mode toggle follow overlay opacity (fade out on work page)
       if (densityPillRef.current) {
         densityPillRef.current.style.opacity = String(overlayOpacity);
         densityPillRef.current.style.pointerEvents = overlayOpacity > 0.1 ? 'auto' : 'none';
       }
-      // AB mark + scroll line follow same overlay opacity
+      if (modeToggleRef.current) {
+        modeToggleRef.current.style.opacity = String(overlayOpacity);
+        modeToggleRef.current.style.pointerEvents = overlayOpacity > 0.1 ? 'auto' : 'none';
+      }
+      // AB mark, scroll line follow same overlay opacity
       const abMark = container.querySelector('.ab-mark') as HTMLElement | null;
       if (abMark) abMark.style.opacity = String(overlayOpacity);
       const scrollLine = container.querySelector('.scroll-line') as HTMLElement | null;
       if (scrollLine) scrollLine.style.opacity = String(overlayOpacity * 0.5);
 
       // ── Color logic: smooth lerp background + particle tint on zone hover ──
-      // EXPERIENCE: background floods with brand color, particles stay dark,
-      //   all UI contrast-switches to white, watermark = darker tint of brand
-      // SKILL: background stays white (#F9F8F4), particles + overlays change
-      //   to brand color, watermark = brand color
+      // MODE: dark = dark bg / white particles / white UI
+      //        light = light bg / dark particles / dark UI
+      // EXPERIENCE: background floods with brand color, UI contrast-switches
+      //   DailyObjects INVERTS per mode (light→black bg; dark→white bg)
+      // SKILL: base bg stays, particles + overlays go brand color
       const cs = colorStateRef.current;
       const lerpSpeed = COLOR_LERP_SPEED;
       const isExperience = cs.zoneType === 'experience';
+      const dark = isDarkModeRef.current;
+
+      // Base palette per mode
+      const BASE_BG = dark ? '#0A0A0A' : '#F9F8F4';
+      const BASE_FG = dark ? '#FFFFFF' : '#0A0A0A';
+      const BASE_FG_RGB = dark ? '255,255,255' : '10,10,10';
+      const BASE_BG_R = dark ? 10 / 255 : 249 / 255;
+      const BASE_BG_G = dark ? 10 / 255 : 248 / 255;
+      const BASE_BG_B = dark ? 10 / 255 : 244 / 255;
 
       // Lerp strength
       cs.strength += (cs.targetStrength - cs.strength) * lerpSpeed;
@@ -967,135 +1010,184 @@ export default function DataTree() {
       const subtitleEl = container.querySelector('.subtitle-overlay') as HTMLElement | null;
       const paraTextEl = container.querySelector('.home-para-text') as HTMLElement | null;
       const arrowSvg = container.querySelector('.pill-arrow svg') as SVGElement | null;
+      const sDashEl = container.querySelector('.scroll-dash') as HTMLElement | null;
+      const abMarkEl = container.querySelector('.ab-mark') as HTMLElement | null;
+      const scrollLineEl = container.querySelector('.scroll-line') as HTMLElement | null;
+      const modeToggleEl = modeToggleRef.current;
+      const densityPillEl = densityPillRef.current;
+
+      // Helper: apply a color to all minor UI (arrow, dash, AB mark, scroll line, mode toggle bg)
+      const applyMinorUI = (color: string) => {
+        if (sDashEl) sDashEl.style.background = color;
+        if (abMarkEl) abMarkEl.style.color = color;
+        if (scrollLineEl) scrollLineEl.style.background = color;
+        if (arrowSvg) {
+          arrowSvg.querySelectorAll('path').forEach(p => {
+            p.setAttribute('stroke', color);
+            if (p.getAttribute('fill') !== 'none') p.setAttribute('fill', color);
+          });
+        }
+      };
 
       if (cs.strength > 0.005) {
-        const bgR = 249 / 255;
-        const bgG = 248 / 255;
-        const bgB = 244 / 255;
         const isDailyObjects = cs.activeZone === 'DAILYOBJECTS';
         const brandLum = 0.299 * cs.r + 0.587 * cs.g + 0.114 * cs.b;
-        // Is the bg effectively dark? (DailyObjects=black, or very dark brand)
-        const bgIsDark = isDailyObjects || brandLum < 0.15;
 
         if (isExperience) {
           // ── EXPERIENCE: background floods with brand color ──
-          if (progress < 1.0) {
-            const mixR = Math.round((bgR + (cs.r - bgR) * cs.strength) * 255);
-            const mixG = Math.round((bgG + (cs.g - bgG) * cs.strength) * 255);
-            const mixB = Math.round((bgB + (cs.b - bgB) * cs.strength) * 255);
-            container.style.background = `rgb(${mixR},${mixG},${mixB})`;
-            if (blurRectRef.current) blurRectRef.current.style.background = `rgb(${mixR},${mixG},${mixB})`;
-          }
+          // DailyObjects is special: INVERTS per mode
+          //   Light mode: black bg, white particles, white UI
+          //   Dark mode:  white bg, dark particles, dark UI
 
-          // Particles: DailyObjects → white, others → stay dark
           if (isDailyObjects) {
-            particleMat.uniforms.uTintColor.value.set(1, 1, 1);
-            particleMat.uniforms.uTintStrength.value = cs.strength;
-          } else {
-            particleMat.uniforms.uTintStrength.value = 0;
-          }
+            // DailyObjects inverts relative to current mode
+            const doBgR = dark ? 1 : 0;
+            const doBgG = dark ? 1 : 0;
+            const doBgB = dark ? 1 : 0;
 
-          // ALL overlay UI → white (contrasts against colored/dark bg)
-          if (nameTextEl) nameTextEl.style.color = '#FFFFFF';
-          if (subtitleEl) subtitleEl.style.color = '#FFFFFF';
-
-          // Paragraph: dark bg brands → white container / black text; light bg brands → white text / brand bg
-          if (paraTextEl) {
-            if (bgIsDark) {
-              paraTextEl.style.color = '#000000';
-              paraTextEl.style.background = '#FFFFFF';
-            } else {
-              paraTextEl.style.color = '#FFFFFF';
-              paraTextEl.style.background = `rgba(${Math.round(cs.r * 0.3 * 255)},${Math.round(cs.g * 0.3 * 255)},${Math.round(cs.b * 0.3 * 255)},0.85)`;
+            if (progress < 1.0) {
+              const mixR = Math.round((BASE_BG_R + (doBgR - BASE_BG_R) * cs.strength) * 255);
+              const mixG = Math.round((BASE_BG_G + (doBgG - BASE_BG_G) * cs.strength) * 255);
+              const mixB = Math.round((BASE_BG_B + (doBgB - BASE_BG_B) * cs.strength) * 255);
+              container.style.background = `rgb(${mixR},${mixG},${mixB})`;
+              if (blurRectRef.current) blurRectRef.current.style.background = `rgb(${mixR},${mixG},${mixB})`;
             }
-          }
 
-          // Watermark
-          if (watermarkRef.current) {
-            watermarkRef.current.style.color = bgIsDark
-              ? 'rgba(255,255,255,0.18)'
-              : `rgba(${Math.round(cs.r * 0.6 * 255)},${Math.round(cs.g * 0.6 * 255)},${Math.round(cs.b * 0.6 * 255)},0.35)`;
-          }
+            // DailyObjects: adaptive UI based on effective bg luminance during transition
+            const doEffBgR = BASE_BG_R + (doBgR - BASE_BG_R) * cs.strength;
+            const doEffBgG = BASE_BG_G + (doBgG - BASE_BG_G) * cs.strength;
+            const doEffBgB = BASE_BG_B + (doBgB - BASE_BG_B) * cs.strength;
+            const doEffLum = 0.299 * doEffBgR + 0.587 * doEffBgG + 0.114 * doEffBgB;
+            const doUiColor = doEffLum < 0.45 ? '#FFFFFF' : '#0A0A0A';
+            const doUiColorInv = doEffLum < 0.45 ? '#0A0A0A' : '#FFFFFF';
 
-          // Pills + scroll indicators + marks → white
-          if (densityPillRef.current) { densityPillRef.current.style.background = '#FFFFFF'; densityPillRef.current.style.color = '#000000'; }
-          const sDash = container.querySelector('.scroll-dash') as HTMLElement | null;
-          if (sDash) sDash.style.background = '#FFFFFF';
-          const abMarkExp = container.querySelector('.ab-mark') as HTMLElement | null;
-          if (abMarkExp) abMarkExp.style.color = '#FFFFFF';
-          const scrollLineExp = container.querySelector('.scroll-line') as HTMLElement | null;
-          if (scrollLineExp) scrollLineExp.style.background = '#FFFFFF';
-          if (arrowSvg) {
-            arrowSvg.querySelectorAll('path').forEach(p => {
-              p.setAttribute('stroke', '#FFFFFF');
-              if (p.getAttribute('fill') !== 'none') p.setAttribute('fill', '#FFFFFF');
-            });
+            if (dark) {
+              // Dark mode + DailyObjects: bg→white, particles→dark
+              particleMat.uniforms.uTintStrength.value = 0;
+            } else {
+              // Light mode + DailyObjects: bg→black, particles→white
+              particleMat.uniforms.uTintColor.value.set(1, 1, 1);
+              particleMat.uniforms.uTintStrength.value = cs.strength;
+            }
+
+            if (nameTextEl) nameTextEl.style.color = doUiColor;
+            if (subtitleEl) subtitleEl.style.color = doUiColor;
+            if (paraTextEl) { paraTextEl.style.color = doUiColorInv; paraTextEl.style.background = doUiColor; }
+            if (watermarkRef.current) watermarkRef.current.style.color = doEffLum < 0.45 ? 'rgba(255,255,255,0.18)' : 'rgba(0,0,0,0.15)';
+            if (densityPillEl) { densityPillEl.style.background = doUiColor; densityPillEl.style.color = doUiColorInv; }
+            if (modeToggleEl) { modeToggleEl.style.background = doUiColor; modeToggleEl.style.color = doUiColorInv; }
+            applyMinorUI(doUiColor);
+          } else {
+            // Non-DailyObjects experience: bg floods with brand color
+            if (progress < 1.0) {
+              const mixR = Math.round((BASE_BG_R + (cs.r - BASE_BG_R) * cs.strength) * 255);
+              const mixG = Math.round((BASE_BG_G + (cs.g - BASE_BG_G) * cs.strength) * 255);
+              const mixB = Math.round((BASE_BG_B + (cs.b - BASE_BG_B) * cs.strength) * 255);
+              container.style.background = `rgb(${mixR},${mixG},${mixB})`;
+              if (blurRectRef.current) blurRectRef.current.style.background = `rgb(${mixR},${mixG},${mixB})`;
+            }
+
+            // Particles: in dark mode they're white by default, need to un-tint for colored bg
+            if (dark) {
+              // Lerp tint back toward 0 so natural dark texture shows against colored bg
+              particleMat.uniforms.uTintStrength.value = Math.max(0, 1 - cs.strength);
+            } else {
+              particleMat.uniforms.uTintStrength.value = 0;
+            }
+
+            // UI text: blend between BASE_FG and contrast color based on strength
+            // This prevents white text lingering on a light bg during fade-out
+            const effBgR = (BASE_BG_R + (cs.r - BASE_BG_R) * cs.strength);
+            const effBgG = (BASE_BG_G + (cs.g - BASE_BG_G) * cs.strength);
+            const effBgB = (BASE_BG_B + (cs.b - BASE_BG_B) * cs.strength);
+            const effBgLum = 0.299 * effBgR + 0.587 * effBgG + 0.114 * effBgB;
+            const textOnBg = effBgLum < 0.45 ? '#FFFFFF' : '#0A0A0A';
+            if (nameTextEl) nameTextEl.style.color = textOnBg;
+            if (subtitleEl) subtitleEl.style.color = textOnBg;
+            const bgEffDark = effBgLum < 0.35;
+            if (paraTextEl) {
+              if (bgEffDark) {
+                paraTextEl.style.color = '#000000';
+                paraTextEl.style.background = '#FFFFFF';
+              } else {
+                paraTextEl.style.color = '#FFFFFF';
+                paraTextEl.style.background = `rgba(${Math.round(cs.r * 0.3 * 255)},${Math.round(cs.g * 0.3 * 255)},${Math.round(cs.b * 0.3 * 255)},0.85)`;
+              }
+            }
+            if (watermarkRef.current) {
+              watermarkRef.current.style.color = bgEffDark
+                ? 'rgba(255,255,255,0.18)'
+                : `rgba(${Math.round(cs.r * 0.6 * 255)},${Math.round(cs.g * 0.6 * 255)},${Math.round(cs.b * 0.6 * 255)},0.35)`;
+            }
+            if (densityPillEl) { densityPillEl.style.background = textOnBg; densityPillEl.style.color = effBgLum < 0.45 ? '#000000' : '#FFFFFF'; }
+            if (modeToggleEl) { modeToggleEl.style.background = textOnBg; modeToggleEl.style.color = effBgLum < 0.45 ? '#000000' : '#FFFFFF'; }
+            applyMinorUI(textOnBg);
           }
         } else {
-          // ── SKILL: bg stays white, particles + overlays change to brand color ──
+          // ── SKILL: base bg stays, particles + overlays go brand color ──
           particleMat.uniforms.uTintColor.value.set(cs.r, cs.g, cs.b);
-          particleMat.uniforms.uTintStrength.value = cs.strength;
+          particleMat.uniforms.uTintStrength.value = dark ? 1 : cs.strength;
 
           if (nameTextEl) nameTextEl.style.color = `rgb(${r255},${g255},${b255})`;
           if (subtitleEl) subtitleEl.style.color = `rgb(${r255},${g255},${b255})`;
           if (paraTextEl) {
-            paraTextEl.style.color = '#FFFFFF';
+            paraTextEl.style.color = dark ? '#000000' : '#FFFFFF';
             paraTextEl.style.background = `rgb(${r255},${g255},${b255})`;
           }
           if (watermarkRef.current) watermarkRef.current.style.color = `rgba(${r255},${g255},${b255},0.22)`;
-          if (densityPillRef.current) { densityPillRef.current.style.background = `rgb(${r255},${g255},${b255})`; densityPillRef.current.style.color = '#FFFFFF'; }
-          const sDash2 = container.querySelector('.scroll-dash') as HTMLElement | null;
-          if (sDash2) sDash2.style.background = `rgb(${r255},${g255},${b255})`;
-          const abMarkSkill = container.querySelector('.ab-mark') as HTMLElement | null;
-          if (abMarkSkill) abMarkSkill.style.color = `rgb(${r255},${g255},${b255})`;
-          const scrollLineSkill = container.querySelector('.scroll-line') as HTMLElement | null;
-          if (scrollLineSkill) scrollLineSkill.style.background = `rgb(${r255},${g255},${b255})`;
-          if (arrowSvg) {
-            arrowSvg.querySelectorAll('path').forEach(p => {
-              p.setAttribute('stroke', `rgb(${r255},${g255},${b255})`);
-              if (p.getAttribute('fill') !== 'none') p.setAttribute('fill', `rgb(${r255},${g255},${b255})`);
-            });
-          }
+          if (densityPillEl) { densityPillEl.style.background = `rgb(${r255},${g255},${b255})`; densityPillEl.style.color = dark ? '#000000' : '#FFFFFF'; }
+          if (modeToggleEl) { modeToggleEl.style.background = `rgb(${r255},${g255},${b255})`; modeToggleEl.style.color = dark ? '#000000' : '#FFFFFF'; }
+          applyMinorUI(`rgb(${r255},${g255},${b255})`);
         }
       } else {
-        // ── DEFAULT: white bg, black UI, paragraph = black bg white text ──
+        // ── DEFAULT: no zone hovered — base palette ──
         cs.activeZone = null;
         cs.zoneType = null;
-        particleMat.uniforms.uTintStrength.value = 0;
-        if (nameTextEl) nameTextEl.style.color = '#0A0A0A';
-        if (subtitleEl) subtitleEl.style.color = 'rgb(10,10,10)';
-        if (paraTextEl) { paraTextEl.style.color = '#FFFFFF'; paraTextEl.style.background = '#0A0A0A'; }
-        if (watermarkRef.current) watermarkRef.current.style.color = 'rgba(10,10,10,0.22)';
-        if (densityPillRef.current) { densityPillRef.current.style.background = '#000000'; densityPillRef.current.style.color = '#ffffff'; }
-        // Scroll arrow, dash, AB mark, scroll line
-        const scrollDash = container.querySelector('.scroll-dash') as HTMLElement | null;
-        if (scrollDash) scrollDash.style.background = '#0A0A0A';
-        const abMarkDef = container.querySelector('.ab-mark') as HTMLElement | null;
-        if (abMarkDef) abMarkDef.style.color = '#0A0A0A';
-        const scrollLineDef = container.querySelector('.scroll-line') as HTMLElement | null;
-        if (scrollLineDef) scrollLineDef.style.background = '#0A0A0A';
-        if (arrowSvg) {
-          arrowSvg.querySelectorAll('path').forEach(p => {
-            p.setAttribute('stroke', '#0A0A0A');
-            if (p.getAttribute('fill') !== 'none') p.setAttribute('fill', '#0A0A0A');
-          });
+
+        // Dark mode: white particles (tint white at 1.0); Light mode: natural dark (tint 0)
+        if (dark) {
+          particleMat.uniforms.uTintColor.value.set(1, 1, 1);
+          particleMat.uniforms.uTintStrength.value = 1;
+        } else {
+          particleMat.uniforms.uTintStrength.value = 0;
         }
+
+        if (nameTextEl) nameTextEl.style.color = BASE_FG;
+        if (subtitleEl) subtitleEl.style.color = BASE_FG;
+        // Paragraph: inverted highlight (dark mode → white bg/black text; light mode → black bg/white text)
+        if (paraTextEl) {
+          paraTextEl.style.color = dark ? '#000000' : '#FFFFFF';
+          paraTextEl.style.background = BASE_FG;
+        }
+        if (watermarkRef.current) watermarkRef.current.style.color = `rgba(${BASE_FG_RGB},0.22)`;
+        if (densityPillEl) { densityPillEl.style.background = BASE_FG; densityPillEl.style.color = dark ? '#000000' : '#FFFFFF'; }
+        if (modeToggleEl) { modeToggleEl.style.background = BASE_FG; modeToggleEl.style.color = dark ? '#000000' : '#FFFFFF'; }
+        applyMinorUI(BASE_FG);
       }
 
-      // ── Organic background transition: white (#F9F8F4) → black ──
-      // Smooth ease-in-out as scroll enters the work section
+      // ── Organic background transition: home base → black (work page) ──
+      // Dark mode: already dark, so transition is subtle
+      // Light mode: #F9F8F4 → black
       const workBgT = clamp((progress - 1.0) / 0.3, 0, 1);
       const smoothBgT = workBgT * workBgT * (3 - 2 * workBgT); // smoothstep
       if (progress >= 0.95) {
-        const bgR_s = Math.round(249 * (1 - smoothBgT));
-        const bgG_s = Math.round(248 * (1 - smoothBgT));
-        const bgB_s = Math.round(244 * (1 - smoothBgT));
-        container.style.background = `rgb(${bgR_s},${bgG_s},${bgB_s})`;
-        if (blurRectRef.current) blurRectRef.current.style.background = `rgb(${bgR_s},${bgG_s},${bgB_s})`;
+        if (dark) {
+          // Dark → stays dark (10,10,10 → 0,0,0)
+          const bgV = Math.round(10 * (1 - smoothBgT));
+          container.style.background = `rgb(${bgV},${bgV},${bgV})`;
+          if (blurRectRef.current) blurRectRef.current.style.background = `rgb(${bgV},${bgV},${bgV})`;
+        } else {
+          // Light → transitions to black (F9F8F4 → 0,0,0)
+          const lr = Math.round(249 * (1 - smoothBgT));
+          const lg = Math.round(248 * (1 - smoothBgT));
+          const lb = Math.round(244 * (1 - smoothBgT));
+          container.style.background = `rgb(${lr},${lg},${lb})`;
+          if (blurRectRef.current) blurRectRef.current.style.background = `rgb(${lr},${lg},${lb})`;
+        }
       } else if (cs.strength < 0.005) {
         // Home screen default (no zone hovered)
-        container.style.background = '#F9F8F4';
-        if (blurRectRef.current) blurRectRef.current.style.background = '#F9F8F4';
+        container.style.background = BASE_BG;
+        if (blurRectRef.current) blurRectRef.current.style.background = BASE_BG;
       }
 
       // WorkPage color sync via CSS variables
@@ -1113,10 +1205,12 @@ export default function DataTree() {
           el.style.setProperty('--wp-pill-text', brandIsDark ? '#000000' : '#ffffff');
           el.style.setProperty('--wp-toggle-bg', `rgba(${r255},${g255},${b255},0.2)`);
         } else {
-          // Default: white text/pills on black bg
-          el.style.setProperty('--wp-text', '#ffffff');
-          el.style.setProperty('--wp-pill-bg', '#ffffff');
-          el.style.setProperty('--wp-pill-text', '#000000');
+          // Default: mode-aware
+          const fg = isDarkModeRef.current ? '#ffffff' : '#0A0A0A';
+          const fgInv = isDarkModeRef.current ? '#000000' : '#ffffff';
+          el.style.setProperty('--wp-text', fg);
+          el.style.setProperty('--wp-pill-bg', fg);
+          el.style.setProperty('--wp-pill-text', fgInv);
           el.style.setProperty('--wp-toggle-bg', 'transparent');
         }
       }
@@ -1179,12 +1273,12 @@ export default function DataTree() {
       // Skip density changes during card formation/disintegration
       if (cardFormingRef.current || cardDisintegratingRef.current) return;
       if (e.key === '=' || e.key === '+') {
-        densityScale = Math.min(densityScale + 0.15, 2.5);
+        densityScale = Math.min(densityScale + 1.0, 12.0);
         particleMat.uniforms.uDensityScale.value = densityScale;
         updateDensityHint();
       }
       if (e.key === '-') {
-        densityScale = Math.max(densityScale - 0.15, 0.3);
+        densityScale = Math.max(densityScale - 1.0, 0.5);
         particleMat.uniforms.uDensityScale.value = densityScale;
         updateDensityHint();
       }
@@ -1194,13 +1288,13 @@ export default function DataTree() {
     // Expose density controls via refs for clickable +/- buttons
     densityUpRef.current = () => {
       if (cardFormingRef.current || cardDisintegratingRef.current) return;
-      densityScale = Math.min(densityScale + 0.15, 2.5);
+      densityScale = Math.min(densityScale + 1.0, 12.0);
       particleMat.uniforms.uDensityScale.value = densityScale;
       updateDensityHint();
     };
     densityDownRef.current = () => {
       if (cardFormingRef.current || cardDisintegratingRef.current) return;
-      densityScale = Math.max(densityScale - 0.15, 0.3);
+      densityScale = Math.max(densityScale - 1.0, 0.5);
       particleMat.uniforms.uDensityScale.value = densityScale;
       updateDensityHint();
     };
@@ -1443,9 +1537,9 @@ export default function DataTree() {
             // LOCKED card font size — compute from actual card cell size
             const d_persp = FOV / (FOV + CAMERA_Z_OFFSET);
             const rect0 = cardRectsRef.current[0];
-            const cellW = rect0 ? rect0.w / CARD_COLS : 14;
-            // 0.85 factor ensures characters NEVER overlap — 85% of cell width
-            const targetFontSize = (cellW * 0.85) / d_persp;
+            const cellW = rect0 ? rect0.w / CARD_COLS : 10;
+            // 0.55 factor: smaller chars at 2x density — never overlap, higher resolution
+            const targetFontSize = (cellW * 0.55) / d_persp;
             // Force density scale to 1.0 during card formation so font is stable
             particleMat.uniforms.uDensityScale.value = 1.0;
 
@@ -1508,12 +1602,12 @@ export default function DataTree() {
       const scrollWhiteT = clamp((progress - 1.0) / 0.3, 0, 1);
       const scrollWhiteEased = scrollWhiteT * scrollWhiteT * (3 - 2 * scrollWhiteT);
       if (scrollWhiteEased > 0) {
+        // Both modes: particles transition to white as bg goes black on scroll to work page
         particleMat.uniforms.uTintColor.value.set(1, 1, 1);
-        // Card formation overrides: use max of scroll tint and cfp tint
         particleMat.uniforms.uTintStrength.value = Math.max(scrollWhiteEased, cfp);
       }
 
-      // LED glow effect — particles glow when background is dark
+      // LED glow effect — particles glow when background is dark (work page is always dark)
       // Uses CSS filter on canvas for performant soft glow
       const glowStrength = Math.max(scrollWhiteEased, cfp);
       if (treeCanvasRef.current) {
@@ -1527,10 +1621,11 @@ export default function DataTree() {
         }
       }
 
-      // Canvas background: opaque black when in dark zone (card formation OR scroll-past-work)
-      // Use max of cfp and scrollWhiteEased so canvas stays dark as long as EITHER applies
-      // This prevents the flash where container turns white but canvas is still a dark overlay
-      const clearAlpha = Math.max(cfp, scrollWhiteEased);
+      // Canvas background: work page is always dark regardless of mode
+      // Dark mode: near-opaque always; Light mode: goes opaque as you scroll to work
+      const clearAlpha = isDarkModeRef.current
+        ? Math.max(cfp, scrollWhiteEased, 0.85)
+        : Math.max(cfp, scrollWhiteEased); // light mode: opaque on work page, transparent on home
       renderer.setClearColor(0x000000, clearAlpha);
 
       // Smart lines
@@ -1586,11 +1681,12 @@ export default function DataTree() {
         left: 0,
         width: "100vw",
         height: "100vh",
-        background: '#F9F8F4',
+        background: isDarkMode ? '#0A0A0A' : '#F9F8F4',
         overflow: "hidden",
         touchAction: "pan-y",
         userSelect: "none",
         cursor: "default",
+        transition: 'background 0.5s ease',
       }}
     >
       {/* Tree layer (Three.js WebGL) */}
@@ -1629,7 +1725,7 @@ export default function DataTree() {
         })
       )}
 
-      {/* Vignette — Figma 8064:29649, centered, #f9f8f4, blur 72px */}
+      {/* Vignette — Figma 8064:29649, centered, blur 72px, follows mode */}
       <div
         ref={vignetteRef}
         style={{
@@ -1639,15 +1735,16 @@ export default function DataTree() {
           transform: 'translate(-50%, -50%)',
           width: 1269,
           height: 410,
-          background: '#f9f8f4',
+          background: isDarkMode ? '#0A0A0A' : '#f9f8f4',
           filter: 'blur(72px)',
           opacity: 0.8,
           zIndex: 1,
           pointerEvents: 'none',
+          transition: 'background 0.5s ease',
         }}
       />
 
-      {/* Center SCROLL text — Figma 8064:29678 */}
+      {/* Center SCROLL text + onboarding controls */}
       <div
         ref={hintRef}
         style={{
@@ -1656,14 +1753,15 @@ export default function DataTree() {
           left: '50%',
           transform: 'translate(-50%, -50%)',
           zIndex: 5,
-          pointerEvents: 'none',
+          pointerEvents: 'auto',
           opacity: 0.8,
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
-          gap: 12,
+          gap: 32,
         }}
       >
+        {/* SCROLL text */}
         <span
           className="glitch-text"
           style={{
@@ -1677,6 +1775,101 @@ export default function DataTree() {
         >
           SCROLL
         </span>
+
+        {/* Controls stack: two pills vertically centered */}
+        <div style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 10,
+          alignItems: 'center',
+          marginTop: 12,
+        }}>
+          {/* MODE pill — night/day toggle */}
+          <div
+            className="onboard-mode-pill"
+            onClick={() => {
+              const next = !isDarkModeRef.current;
+              isDarkModeRef.current = next;
+              setIsDarkMode(next);
+            }}
+            style={{
+              width: 160,
+              height: 44,
+              borderRadius: 22,
+              background: '#000000',
+              color: '#ffffff',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 8,
+              fontFamily: 'Inter, "Helvetica Neue", sans-serif',
+              fontWeight: 500,
+              fontSize: 12,
+              letterSpacing: '0.06em',
+              cursor: 'pointer',
+              transition: 'background 0.4s ease, color 0.4s ease',
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              {isDarkMode ? (
+                <>
+                  <circle cx="8" cy="8" r="3.5" stroke="currentColor" strokeWidth="1.5" fill="none" />
+                  <line x1="8" y1="1" x2="8" y2="3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                  <line x1="8" y1="13" x2="8" y2="15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                  <line x1="1" y1="8" x2="3" y2="8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                  <line x1="13" y1="8" x2="15" y2="8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                </>
+              ) : (
+                <path d="M13 8.5A5.5 5.5 0 1 1 7.5 3c.28 0 .55.02.82.07A4.5 4.5 0 0 0 12.93 7.68c.05.27.07.54.07.82z" stroke="currentColor" strokeWidth="1.3" fill="none" />
+              )}
+            </svg>
+            {isDarkMode ? 'DAY MODE' : 'NIGHT MODE'}
+          </div>
+
+          {/* DENSITY pill — minus / label / plus */}
+          <div
+            className="onboard-density-pill"
+            style={{
+              width: 160,
+              height: 44,
+              borderRadius: 22,
+              background: '#000000',
+              color: '#ffffff',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '0 4px',
+              fontFamily: 'Inter, "Helvetica Neue", sans-serif',
+              fontWeight: 500,
+              fontSize: 12,
+              letterSpacing: '0.06em',
+              cursor: 'default',
+              transition: 'background 0.4s ease, color 0.4s ease',
+            }}
+          >
+            <div
+              onClick={() => densityDownRef.current()}
+              style={{
+                width: 34, height: 34, borderRadius: '50%',
+                background: 'rgba(128,128,128,0.2)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                cursor: 'pointer', fontSize: 16, fontWeight: 300, userSelect: 'none',
+              }}
+            >−</div>
+            <span>DENSITY</span>
+            <div
+              onClick={() => densityUpRef.current()}
+              style={{
+                width: 34, height: 34, borderRadius: '50%',
+                background: 'rgba(128,128,128,0.2)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                cursor: 'pointer', fontSize: 16, fontWeight: 300, userSelect: 'none',
+              }}
+            >+</div>
+          </div>
+        </div>
+
+        {/* Pulse line */}
         <span
           ref={dotRef}
           style={{
@@ -1686,6 +1879,98 @@ export default function DataTree() {
             background: 'rgba(0,0,0,0.18)',
           }}
         />
+      </div>
+
+      {/* ═══════════ TOP-RIGHT: Mode toggle + Density pill ═══════════ */}
+
+      {/* Dark/Light mode toggle */}
+      <div
+        ref={modeToggleRef}
+        className="mode-toggle"
+        onClick={() => {
+          const next = !isDarkModeRef.current;
+          isDarkModeRef.current = next;
+          setIsDarkMode(next);
+        }}
+        style={{
+          position: 'absolute',
+          top: 'clamp(24px, 3vh, 48px)',
+          right: 'clamp(24px, 2.6vw, 48px)',
+          zIndex: 5,
+          opacity: 0,
+          width: 36,
+          height: 36,
+          borderRadius: '50%',
+          background: '#0A0A0A',
+          color: '#FFFFFF',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          cursor: 'pointer',
+          pointerEvents: 'auto',
+          transition: 'background 0.5s ease, color 0.5s ease, transform 0.3s ease',
+        }}
+      >
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ display: 'block' }}>
+          {isDarkMode ? (
+            <>
+              <circle cx="8" cy="8" r="3.5" stroke="currentColor" strokeWidth="1.5" fill="none" />
+              <line x1="8" y1="1" x2="8" y2="3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              <line x1="8" y1="13" x2="8" y2="15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              <line x1="1" y1="8" x2="3" y2="8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              <line x1="13" y1="8" x2="15" y2="8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </>
+          ) : (
+            <path d="M13 8.5A5.5 5.5 0 1 1 7.5 3c.28 0 .55.02.82.07A4.5 4.5 0 0 0 12.93 7.68c.05.27.07.54.07.82z" stroke="currentColor" strokeWidth="1.3" fill="none" />
+          )}
+        </svg>
+      </div>
+
+      {/* Density pill */}
+      <div
+        ref={densityPillRef}
+        style={{
+          position: 'absolute',
+          top: 'clamp(24px, 3vh, 48px)',
+          right: `calc(clamp(24px, 2.6vw, 48px) + 48px)`,
+          zIndex: 5,
+          opacity: 0,
+          height: 36,
+          borderRadius: 18,
+          background: '#0A0A0A',
+          color: '#FFFFFF',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '0 4px',
+          gap: 2,
+          fontFamily: 'Inter, "Helvetica Neue", sans-serif',
+          fontWeight: 500,
+          fontSize: 10,
+          letterSpacing: '0.08em',
+          pointerEvents: 'auto',
+          transition: 'background 0.5s ease, color 0.5s ease',
+        }}
+      >
+        <div
+          onClick={() => densityDownRef.current()}
+          style={{
+            width: 28, height: 28, borderRadius: '50%',
+            background: 'rgba(128,128,128,0.15)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: 'pointer', fontSize: 14, fontWeight: 300, userSelect: 'none',
+          }}
+        >−</div>
+        <span style={{ padding: '0 6px' }}>DENSITY</span>
+        <div
+          onClick={() => densityUpRef.current()}
+          style={{
+            width: 28, height: 28, borderRadius: '50%',
+            background: 'rgba(128,128,128,0.15)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: 'pointer', fontSize: 14, fontWeight: 300, userSelect: 'none',
+          }}
+        >+</div>
       </div>
 
       {/* ═══════════ BOTTOM SECTION — matching work page aesthetic ═══════════ */}
@@ -1699,10 +1984,11 @@ export default function DataTree() {
           left: '-5vw',
           width: '110vw',
           height: 'clamp(200px, 32vh, 340px)',
-          background: '#F9F8F4',
+          background: isDarkMode ? '#0A0A0A' : '#F9F8F4',
           filter: 'blur(clamp(44px, 3.75vw, 72px))',
           zIndex: 1,
           pointerEvents: 'none',
+          transition: 'background 0.5s ease',
         }}
       />
 
@@ -1808,82 +2094,6 @@ export default function DataTree() {
         </div>
       </div>
 
-      {/* ═══════════ TOP-LEFT: AB 2025 branding ═══════════ */}
-      <div
-        className="ab-mark"
-        style={{
-          position: 'absolute',
-          top: 'clamp(24px, 3vh, 48px)',
-          left: 'clamp(24px, 2.6vw, 48px)',
-          zIndex: 5,
-          fontFamily: 'Inter, "Helvetica Neue", Helvetica, Arial, sans-serif',
-          fontWeight: 500,
-          fontSize: 'clamp(10px, 0.77vw, 13px)',
-          letterSpacing: '0.04em',
-          color: '#0A0A0A',
-          opacity: 0,
-          pointerEvents: 'none',
-          transition: 'color 0.5s ease',
-        }}
-      >
-        AB 2025
-      </div>
-
-      {/* ═══════════ TOP-RIGHT: Density pill ═══════════ */}
-      <div
-        ref={densityPillRef}
-        style={{
-          position: 'absolute',
-          top: 'clamp(24px, 3vh, 48px)',
-          right: 'clamp(24px, 2.6vw, 48px)',
-          zIndex: 5,
-          opacity: 0,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 0,
-          background: '#000000',
-          borderRadius: 27,
-          padding: '4px',
-          fontFamily: 'Inter, "Helvetica Neue", Helvetica, Arial, sans-serif',
-          fontWeight: 500,
-          fontSize: 'clamp(11px, 0.83vw, 15px)',
-          color: '#ffffff',
-          whiteSpace: 'nowrap',
-          pointerEvents: 'none',
-        }}
-      >
-        <div
-          onClick={() => densityDownRef.current()}
-          style={{
-            width: 36, height: 36,
-            borderRadius: '50%',
-            background: 'rgba(255,255,255,0.12)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            cursor: 'pointer', pointerEvents: 'auto',
-            fontSize: 18, fontWeight: 300, userSelect: 'none',
-            transition: 'background 0.2s',
-          }}
-          onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.25)')}
-          onMouseLeave={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.12)')}
-        >−</div>
-        <div style={{ padding: '6px 16px', letterSpacing: '0.08em', fontSize: 'clamp(10px, 0.77vw, 13px)' }}>
-          DENSITY
-        </div>
-        <div
-          onClick={() => densityUpRef.current()}
-          style={{
-            width: 36, height: 36,
-            borderRadius: '50%',
-            background: 'rgba(255,255,255,0.12)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            cursor: 'pointer', pointerEvents: 'auto',
-            fontSize: 18, fontWeight: 300, userSelect: 'none',
-            transition: 'background 0.2s',
-          }}
-          onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.25)')}
-          onMouseLeave={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.12)')}
-        >+</div>
-      </div>
 
       {/* ═══════════ BOTTOM-CENTER: Scroll line ═══════════ */}
       <div
@@ -2027,6 +2237,7 @@ export default function DataTree() {
       <WorkPage
         ref={workPageRef}
         visible={workVisible}
+        isDarkMode={isDarkMode}
         onHoverZone={(key) => showWatermark(key, key)}
         onLeaveZone={() => hideWatermark()}
         onHomePill={() => {
@@ -2040,9 +2251,14 @@ export default function DataTree() {
           cs.strength = 0;
           cs.activeZone = null;
           cs.zoneType = null;
-          // Clear tint + glow
+          // Clear tint + glow (dark mode: reset to white tint at 1.0)
           if (particleMatRef.current) {
-            particleMatRef.current.uniforms.uTintStrength.value = 0;
+            if (isDarkModeRef.current) {
+              particleMatRef.current.uniforms.uTintColor.value.set(1, 1, 1);
+              particleMatRef.current.uniforms.uTintStrength.value = 1;
+            } else {
+              particleMatRef.current.uniforms.uTintStrength.value = 0;
+            }
           }
           if (treeCanvasRef.current) {
             treeCanvasRef.current.style.filter = 'none';

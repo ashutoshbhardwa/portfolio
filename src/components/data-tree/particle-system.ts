@@ -426,7 +426,7 @@ export function createParticleMaterial(
       uSceneScale: { value: 1 },
       uDPR: { value: 1 },
       uUniformScale: { value: 1 },
-      uDensityScale: { value: 1.0 },
+      uDensityScale: { value: 3.0 },
       uDisintegration: { value: 0.0 },
       uAtlas: { value: atlas },
       uTintColor: { value: new THREE.Vector3(0, 0, 0) },

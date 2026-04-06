@@ -1,5 +1,6 @@
 'use client';
 import React, { useState, useEffect, useRef, forwardRef, useCallback } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import TextScramble from './TextScramble';
 import type { CardRect } from './DataTree';
 import { ZONE_COLORS } from './data-tree/constants';
@@ -122,10 +123,11 @@ interface WorkPageProps {
   onHomePill: () => void;
   onPillHover?: (company: string | null) => void;
   cardRects?: CardRect[];
+  isDarkMode?: boolean;
 }
 
 const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
-  { visible, onHoverZone, onLeaveZone, onHomePill, onPillHover, cardRects = [] }, ref
+  { visible, onHoverZone, onLeaveZone, onHomePill, onPillHover, cardRects = [], isDarkMode = false }, ref
 ) {
   const [mode, setMode] = useState<'exp' | 'skill'>('exp');
   const [hovered, setHovered] = useState<string | null>(null);
@@ -140,6 +142,23 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
 
   const [lockedPill, setLockedPill] = useState<string | null>(null);
   const pills = mode === 'exp' ? EXP_PILLS : SKILL_PILLS;
+
+  // Work page is ALWAYS dark — black bg, white text, white particles
+  // Dark/light mode only affects the home page; work page stays dark regardless
+  const wpFg = '#FFFFFF';
+  const wpFgSub = '#B3B3B3';
+  const wpPillActive = '#FFFFFF';
+  const wpPillActiveText = '#000000';
+  const wpPillInactive = '#333333';
+  const wpPillInactiveText = '#B3B3B3';
+  const wpToggleActiveBg = '#ffffff';
+  const wpToggleActiveText = '#000000';
+  const wpToggleInactiveBg = 'transparent';
+  const wpToggleInactiveText = '#B3B3B3';
+  const wpToggleBg = '#404040';
+  const wpGradient = 'linear-gradient(to top, rgba(0,0,0,0.8) 0%, rgba(0,0,0,0) 100%)';
+  const wpHomeBg = '#ffffff';
+  const wpHomeText = '#000000';
 
   // ── Auto-disintegrate timer ──────────────────────────────────────────────
   const autoDisintegrateRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -258,7 +277,7 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
         left: 0, right: 0,
         bottom: 0,
         height: H * 0.36,
-        background: 'linear-gradient(to top, rgba(0,0,0,0.8) 0%, rgba(0,0,0,0) 100%)',
+        background: wpGradient,
         pointerEvents: 'none',
         zIndex: 9,
       }} />
@@ -280,7 +299,7 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
           fontWeight: 700,
           fontSize: 90 * s,
           lineHeight: 0.9,
-          color: '#ffffff',
+          color: wpFg,
           letterSpacing: -2,
         }}>
           <TextScramble trigger={scrambleTrigger} duration={1.0} speed={0.04} as="div">
@@ -291,9 +310,9 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
         {/* Description — inline code-style highlight per line */}
         {(() => {
           const activeZone = hovered ? ZONE_COLORS[hovered] : null;
-          const bgColor = activeZone ? activeZone.hex : 'rgba(255,255,255,0.08)';
+          const bgColor = activeZone ? activeZone.hex : (isDarkMode ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)');
           const isVeryDark = activeZone && (activeZone.r + activeZone.g + activeZone.b) < 0.3;
-          const highlightBg = isVeryDark ? 'rgba(255,255,255,0.12)' : bgColor;
+          const highlightBg = isVeryDark ? (isDarkMode ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)') : bgColor;
           return (
             <div style={{
               maxWidth: 520 * sx,
@@ -304,7 +323,7 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
                 fontWeight: 400,
                 fontSize: 19 * s,
                 lineHeight: 2.0,
-                color: '#ffffff',
+                color: wpFg,
                 background: highlightBg,
                 padding: `${4 * s}px ${10 * s}px`,
                 borderRadius: 4 * s,
@@ -361,35 +380,124 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
             const isActive = hovered === pill.key;
             const isLocked = lockedPill === pill.key;
             const isDimmed = hovered !== null && !isActive;
+            const showLockPill = isActive || isLocked;
             return (
-              <div key={pill.key}
-                onClick={() => handlePillClick(pill)}
+              <div
+                key={pill.key}
+                onMouseEnter={() => handleEnter(pill)}
+                onMouseLeave={handleLeave}
                 style={{
                   flex: 1,
                   display: 'flex',
                   alignItems: 'center',
-                  justifyContent: 'center',
-                  height: 40 * s,
-                  background: isActive ? '#ffffff' : '#333333',
-                  color: isActive ? '#000000' : '#B3B3B3',
-                  borderRadius: 20 * s,
-                  fontFamily: 'Inter, "Helvetica Neue", sans-serif',
-                  fontWeight: 500,
-                  fontSize: 13 * s,
-                  whiteSpace: 'nowrap',
-                  cursor: 'pointer',
+                  gap: 4,
                   opacity: isDimmed ? 0.35 : 1,
-                  transition: 'all 0.3s cubic-bezier(0.22, 1, 0.36, 1)',
-                  boxShadow: isLocked ? '0 0 0 2px rgba(255,255,255,0.8)' : 'none',
+                  transition: 'opacity 0.3s cubic-bezier(0.22,1,0.36,1)',
                   pointerEvents: 'auto',
+                  height: 40 * s,
                 }}
               >
-                <PillButton
-                  onMouseEnter={() => handleEnter(pill)}
-                  onMouseLeave={handleLeave}
+                {/* Lock pill — springs out from the left of the main pill */}
+                <AnimatePresence>
+                  {showLockPill && (
+                    <motion.div
+                      initial={{ opacity: 0, width: 0, scale: 0.5 }}
+                      animate={{
+                        opacity: 1,
+                        width: isLocked ? '40%' : '28%',
+                        scale: 1,
+                      }}
+                      exit={{ opacity: 0, width: 0, scale: 0.5 }}
+                      transition={{
+                        type: 'spring',
+                        stiffness: 400,
+                        damping: isLocked ? 22 : 14,
+                        mass: 0.8,
+                        bounce: 0.3,
+                        opacity: { duration: 0.15 },
+                      }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handlePillClick(pill);
+                      }}
+                      style={{
+                        height: '100%',
+                        borderRadius: 20 * s,
+                        background: isLocked ? wpPillActive : wpPillInactive,
+                        color: isLocked ? wpPillActiveText : wpPillInactiveText,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: 6,
+                        cursor: 'pointer',
+                        flexShrink: 0,
+                        overflow: 'hidden',
+                        fontFamily: 'Inter, "Helvetica Neue", sans-serif',
+                        fontWeight: 500,
+                        fontSize: 11 * s,
+                        letterSpacing: '0.04em',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {/* Lock icon with wobble on hover (unlocked) */}
+                      <motion.div
+                        animate={!isLocked ? {
+                          x: [0, -1.5, 1.5, -1, 1, 0],
+                        } : {}}
+                        transition={!isLocked ? {
+                          duration: 0.4,
+                          repeat: Infinity,
+                          repeatDelay: 2,
+                          ease: 'easeInOut',
+                        } : {}}
+                        style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}
+                      >
+                        <svg width={13 * s} height={13 * s} viewBox="0 0 16 16" fill="none">
+                          <rect x="3" y="7" width="10" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.4" fill="none" />
+                          <path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" fill="none" />
+                          {isLocked && <circle cx="8" cy="10.5" r="1" fill="currentColor" />}
+                        </svg>
+                      </motion.div>
+                      {/* Lock pill text */}
+                      <motion.span
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        transition={{ delay: 0.1, duration: 0.15 }}
+                      >
+                        {isLocked ? 'RELEASE' : 'HOLD'}
+                      </motion.span>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                {/* Main pill — takes remaining space, shows company name */}
+                <motion.div
+                  layout
+                  onClick={() => handlePillClick(pill)}
+                  transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+                  style={{
+                    flex: 1,
+                    height: '100%',
+                    borderRadius: 20 * s,
+                    background: isActive ? wpPillActive : wpPillInactive,
+                    color: isActive ? wpPillActiveText : wpPillInactiveText,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    cursor: 'pointer',
+                    fontFamily: 'Inter, "Helvetica Neue", sans-serif',
+                    fontWeight: 500,
+                    fontSize: 13 * s,
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    transition: 'background 0.3s ease, color 0.3s ease',
+                  }}
                 >
-                  {pill.label}
-                </PillButton>
+                  <PillButton>
+                    {pill.label}
+                  </PillButton>
+                </motion.div>
               </div>
             );
           })}
@@ -414,7 +522,7 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
                 <div style={{
                   width: 0.5,
                   height: isMajor ? 24 * sy : 12 * sy,
-                  background: 'rgba(255,255,255,0.25)',
+                  background: isDarkMode ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.15)',
                 }} />
               </div>
             );
@@ -453,7 +561,7 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
           flexDirection: 'row',
           borderRadius: 12 * s,
           overflow: 'hidden',
-          background: '#404040',
+          background: wpToggleBg,
           width: 'fit-content',
         }}>
           <div
@@ -465,8 +573,8 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              background: mode === 'exp' ? '#ffffff' : 'transparent',
-              color: mode === 'exp' ? '#000000' : '#B3B3B3',
+              background: mode === 'exp' ? wpToggleActiveBg : wpToggleInactiveBg,
+              color: mode === 'exp' ? wpToggleActiveText : wpToggleInactiveText,
               borderRadius: 12 * s,
               fontFamily: 'Inter, "Helvetica Neue", sans-serif',
               fontWeight: 500,
@@ -487,8 +595,8 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              background: mode === 'skill' ? '#ffffff' : 'transparent',
-              color: mode === 'skill' ? '#000000' : '#B3B3B3',
+              background: mode === 'skill' ? wpToggleActiveBg : wpToggleInactiveBg,
+              color: mode === 'skill' ? wpToggleActiveText : wpToggleInactiveText,
               borderRadius: 12 * s,
               fontFamily: 'Inter, "Helvetica Neue", sans-serif',
               fontWeight: 500,
@@ -509,7 +617,7 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
         }}>
           <div style={{
             display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-            background: '#ffffff', color: '#000000', borderRadius: 40,
+            background: wpHomeBg, color: wpHomeText, borderRadius: 40,
             padding: `${10 * s}px ${30 * s}px`,
             fontFamily: 'Inter, "Helvetica Neue", sans-serif',
             fontWeight: 600, fontSize: 14 * s,
