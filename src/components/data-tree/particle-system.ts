@@ -270,7 +270,7 @@ void main() {
 
   // Right-aligned, base at ~85% down
   float tx = rx * d + uResolution.x * 0.72;
-  float ty = -ryFinal * d + uResolution.y * 0.65;
+  float ty = -ryFinal * d + uResolution.y * 0.80;
 
   // Scatter position with brownian drift
   vec2 scatter = aScatterPos + aBrownian;
@@ -448,12 +448,14 @@ export function createParticleMaterial(
 export const LINE_VERTEX_SHADER = /* glsl */ `
 precision highp float;
 
-// "position" auto-declared by Three.js (vec3, z unused)
 uniform vec2 uResolution;
+attribute float aAlpha;
+varying float vAlpha;
 
 void main() {
   vec2 ndc = (position.xy / uResolution) * 2.0 - 1.0;
   ndc.y = -ndc.y;
+  vAlpha = aAlpha;
   gl_Position = vec4(ndc, 0.0, 1.0);
 }
 `;
@@ -463,11 +465,13 @@ precision highp float;
 
 uniform float uLineAlpha;
 uniform float uTime;
+uniform vec3 uColor;
+varying float vAlpha;
 
 void main() {
-  // Electric pulse — alpha oscillates
-  float pulse = 0.7 + 0.3 * sin(uTime * 8.0 + gl_FragCoord.x * 0.05);
-  gl_FragColor = vec4(0.06, 0.06, 0.06, uLineAlpha * pulse);
+  // Subtle shimmer — quieter than before so structural lines don't distract
+  float pulse = 0.92 + 0.08 * sin(uTime * 4.0 + gl_FragCoord.x * 0.03);
+  gl_FragColor = vec4(uColor, uLineAlpha * vAlpha * pulse);
 }
 `;
 
@@ -479,6 +483,7 @@ export function createLineMaterial(): THREE.ShaderMaterial {
       uResolution: { value: new THREE.Vector2(1, 1) },
       uLineAlpha: { value: 0.55 },
       uTime: { value: 0 },
+      uColor: { value: new THREE.Vector3(1, 1, 1) }, // white by default, tinted on zone hover
     },
     transparent: true,
     depthTest: false,

@@ -205,7 +205,7 @@ function computeCardTargets(
           const screenY = rect.y + (row + 0.5) * cellH;
           // 0.72 / 0.85 — must match vertex shader's screen mapping
           const worldX = (screenX - W * 0.72) / (SCENE_SCALE * d);
-          const worldY = (H * 0.65 - screenY) / (SCENE_SCALE * d * 1.15);
+          const worldY = (H * 0.80 - screenY) / (SCENE_SCALE * d * 1.15);
           buf[pi * 3]     = worldX;
           buf[pi * 3 + 1] = worldY;
           buf[pi * 3 + 2] = 0;
@@ -516,15 +516,22 @@ export default function DataTree() {
     // Points (added to scene after data load)
     let points: THREE.Points | null = null;
 
-    // Smart proximity lines
-    const linePosBuf = new Float32Array(MAX_LINES * 6);
+    // Structural lines — trunk-dense, canopy-fading
+    const linePosBuf  = new Float32Array(MAX_LINES * 6); // 2 verts * 3 floats
+    const lineAlphaBuf = new Float32Array(MAX_LINES * 2); // 2 verts * 1 alpha
     const lineGeometry = new THREE.BufferGeometry();
-    const linePosAttr = new THREE.BufferAttribute(linePosBuf, 3);
+    const linePosAttr   = new THREE.BufferAttribute(linePosBuf,  3);
+    const lineAlphaAttr = new THREE.BufferAttribute(lineAlphaBuf, 1);
     linePosAttr.setUsage(THREE.DynamicDrawUsage);
+    lineAlphaAttr.setUsage(THREE.DynamicDrawUsage);
     lineGeometry.setAttribute("position", linePosAttr);
+    lineGeometry.setAttribute("aAlpha",   lineAlphaAttr);
     lineGeometry.setDrawRange(0, 0);
     const lineSegments = new THREE.LineSegments(lineGeometry, lineMat);
     scene.add(lineSegments);
+
+    // Pre-computed structural connections [iA, iB] — computed once when tree forms
+    let structuralLines: Array<[number, number]> | null = null;
 
     // ── Resize ───────────────────────────────────────────────────────────────
     function resize() {
@@ -550,6 +557,9 @@ export default function DataTree() {
       particleMat.uniforms.uResolution.value.set(W, H);
       particleMat.uniforms.uDPR.value = physicalDPR;
       lineMat.uniforms.uResolution.value.set(W, H);
+
+      // Reset structural lines so they recompute at new screen dimensions
+      structuralLines = null;
 
       // Redistribute scatter positions & recompute card targets
       if (pb) {
@@ -770,7 +780,7 @@ export default function DataTree() {
 
         const ryFinal = ry_t * 1.15;
         const tx = rx * d + W * 0.72;
-        const ty = -ryFinal * d + H * 0.65;
+        const ty = -ryFinal * d + H * 0.80;
 
         // Scatter + brownian
         const scatterX = pb.scatterBuf[i * 2] + pb.brownianBuf[i * 2];
@@ -877,84 +887,110 @@ export default function DataTree() {
     // ── Smart proximity lines (1 connection per particle, no clusters) ────────
 
     function updateSmartLines() {
-      if (!pb || progress < 0.7 || mouseX < -100 || cardFormingRef.current || cardDisintegratingRef.current) {
+      if (!pb || progress < 0.85 || cardFormingRef.current || cardDisintegratingRef.current) {
         lineGeometry.setDrawRange(0, 0);
         return;
       }
 
       const cpu = pb.cpuParticles;
-      const n = pb.count;
-      const scale = Math.min(W / 1920, H / 1080);
-      const scaledProxR = PROX_R * scale;
-      const scaledLineMin = LINE_MIN_DIST * scale;
-      const scaledLineMax = LINE_MAX_DIST * scale;
+      const n   = pb.count;
 
-      // Collect disturbed particles near cursor
-      const near: number[] = [];
-      const proxR2 = scaledProxR * scaledProxR;
-      for (let i = 0; i < n; i++) {
-        const p = cpu[i];
-        if (p.ep < 0.5 || p.depthFactor < 0.3) continue;
-        const sx = p.screenX + p.dispX;
-        const sy = p.screenY + p.dispY;
-        const dx = sx - mouseX;
-        const dy = sy - mouseY;
-        if (dx * dx + dy * dy < proxR2 * 2.5) near.push(i);
-      }
-
-      // Track which particles already have a connection (max 1 per particle)
-      const connected = new Set<number>();
-      const connectionPartners = new Map<number, number>();
-      let lineCount = 0;
-      const minD2 = scaledLineMin * scaledLineMin;
-      const maxD2 = scaledLineMax * scaledLineMax;
-
-      for (let a = 0; a < near.length && lineCount < MAX_LINES; a++) {
-        const idxA = near[a];
-        if (connected.has(idxA)) continue;
-        const pA = cpu[idxA];
-        const ax = pA.screenX + pA.dispX;
-        const ay = pA.screenY + pA.dispY;
-
-        // Find ONE partner in the sweet spot (45-90px away)
-        for (let b = a + 1; b < near.length; b++) {
-          const idxB = near[b];
-          if (connected.has(idxB)) continue;
-
-          // Reject if would form triangle with existing connections
-          const partnerOfA = connectionPartners.get(idxA);
-          const partnerOfB = connectionPartners.get(idxB);
-          if (partnerOfA !== undefined && connectionPartners.get(partnerOfA) === idxB) continue;
-          if (partnerOfB !== undefined && connectionPartners.get(partnerOfB) === idxA) continue;
-
-          const pB = cpu[idxB];
-          const bx = pB.screenX + pB.dispX;
-          const by = pB.screenY + pB.dispY;
-          const d2 = (ax - bx) * (ax - bx) + (ay - by) * (ay - by);
-
-          if (d2 > minD2 && d2 < maxD2) {
-            // Connect this pair
-            const off = lineCount * 6;
-            linePosBuf[off] = ax;
-            linePosBuf[off + 1] = ay;
-            linePosBuf[off + 2] = 0;
-            linePosBuf[off + 3] = bx;
-            linePosBuf[off + 4] = by;
-            linePosBuf[off + 5] = 0;
-            lineCount++;
-            connected.add(idxA);
-            connected.add(idxB);
-            connectionPartners.set(idxA, idxB);
-            connectionPartners.set(idxB, idxA);
-            break; // move to next particle
-          }
+      // ── One-time: compute structural connections when tree has fully formed ──
+      if (!structuralLines && progress > 0.87) {
+        // Sample eligible particles — stride down to ~1500 for brute-force O(N²)
+        // With N=1500, 1500² = 2.25M comparisons — fast enough for a one-time calc.
+        const allEl: number[] = [];
+        for (let i = 0; i < n; i++) {
+          const p = cpu[i];
+          if (p.ep < 0.85 || p.depthFactor < 0.15) continue;
+          allEl.push(i);
         }
+        const stride = Math.max(1, Math.floor(allEl.length / 1500));
+        const sampled = allEl.filter((_, idx) => idx % stride === 0);
+
+        // Y thresholds: trunk = high screenY (near H*0.80), canopy = low screenY
+        const yTrunk  = H * 0.82;
+        const yCanopy = H * 0.30;
+
+        // Distance range for structural connections (screen pixels)
+        // Min=12 allows dense trunk connections; Max=70 spans branch-level distances
+        const CONN_MIN = 12, CONN_MAX = 70;
+        const minD2 = CONN_MIN * CONN_MIN;
+        const maxD2 = CONN_MAX * CONN_MAX;
+
+        const connections: Array<[number, number, number, number]> = [];
+        // Track degree per particle — allow up to 2 connections per particle for denser mesh
+        const degree = new Map<number, number>();
+
+        // Sort by screenY descending so we fill trunk connections first
+        sampled.sort((a, b) => cpu[b].screenY - cpu[a].screenY);
+
+        for (let a = 0; a < sampled.length && connections.length < MAX_LINES; a++) {
+          const iA = sampled[a];
+          if ((degree.get(iA) ?? 0) >= 2) continue;
+          const pA = cpu[iA];
+          const ax = pA.screenX, ay = pA.screenY;
+          const rA = Math.max(0, Math.min(1, (ay - yCanopy) / (yTrunk - yCanopy)));
+          const sA = rA * rA * (3 - 2 * rA); // smoothstep alpha
+          if (sA < 0.02) continue; // skip particles in top canopy zone
+
+          // Brute-force search ALL sampled particles for best partner
+          let bestB = -1, bestD2 = maxD2 + 1;
+          for (let b = 0; b < sampled.length; b++) {
+            if (b === a) continue;
+            const iB = sampled[b];
+            if ((degree.get(iB) ?? 0) >= 2) continue;
+            const pB = cpu[iB];
+            const dx = ax - pB.screenX, dy = ay - pB.screenY;
+            const d2 = dx * dx + dy * dy;
+            if (d2 >= minD2 && d2 < maxD2 && d2 < bestD2) {
+              bestB = iB; bestD2 = d2;
+            }
+          }
+          if (bestB < 0) continue;
+
+          const pB = cpu[bestB];
+          const rB = Math.max(0, Math.min(1, (pB.screenY - yCanopy) / (yTrunk - yCanopy)));
+          const sB = rB * rB * (3 - 2 * rB);
+          connections.push([iA, bestB, sA, sB]);
+          degree.set(iA, (degree.get(iA) ?? 0) + 1);
+          degree.set(bestB, (degree.get(bestB) ?? 0) + 1);
+        }
+
+        // Write per-vertex alpha buffer (static until next resize)
+        for (let i = 0; i < connections.length; i++) {
+          lineAlphaBuf[i * 2]     = connections[i][2];
+          lineAlphaBuf[i * 2 + 1] = connections[i][3];
+        }
+        lineAlphaAttr.needsUpdate = true;
+        structuralLines = connections.map(c => [c[0], c[1]] as [number, number]);
       }
 
+      const conns = structuralLines;
+      if (!conns || conns.length === 0) {
+        lineGeometry.setDrawRange(0, 0);
+        return;
+      }
+
+      // ── Per-frame: update positions as particles sway with wind/turbulence ──
+      const count = conns.length;
+      for (let i = 0; i < count; i++) {
+        const [iA, iB] = conns[i];
+        const pA = cpu[iA];
+        const pB = cpu[iB];
+        const off = i * 6;
+        linePosBuf[off]     = pA.screenX + pA.dispX;
+        linePosBuf[off + 1] = pA.screenY + pA.dispY;
+        linePosBuf[off + 2] = 0;
+        linePosBuf[off + 3] = pB.screenX + pB.dispX;
+        linePosBuf[off + 4] = pB.screenY + pB.dispY;
+        linePosBuf[off + 5] = 0;
+      }
       linePosAttr.needsUpdate = true;
-      lineGeometry.setDrawRange(0, lineCount * 2);
+
+      lineGeometry.setDrawRange(0, count * 2);
       lineMat.uniforms.uResolution.value.set(W, H);
-      const formAlpha = clamp((progress - 0.7) / 0.15, 0, 1);
+      const formAlpha = clamp((progress - 0.85) / 0.08, 0, 1);
       lineMat.uniforms.uLineAlpha.value = MAX_LINE_ALPHA * formAlpha;
     }
 
@@ -1092,9 +1128,14 @@ export default function DataTree() {
       };
 
       if (cs.strength > 0.005) {
-        // ── ZONE HOVERED: particles + UI go brand color, bg stays black ──
+        // ── ZONE HOVERED: particles + lines + UI go brand color, bg stays black ──
         particleMat.uniforms.uTintColor.value.set(cs.r, cs.g, cs.b);
         particleMat.uniforms.uTintStrength.value = cs.strength;
+        // Lerp line color toward brand color
+        const lr = 1 + (cs.r - 1) * cs.strength;
+        const lg = 1 + (cs.g - 1) * cs.strength;
+        const lb = 1 + (cs.b - 1) * cs.strength;
+        lineMat.uniforms.uColor.value.set(lr, lg, lb);
 
         const brandColor = `rgb(${r255},${g255},${b255})`;
         if (nameTextEl) nameTextEl.style.color = brandColor;
@@ -1111,9 +1152,10 @@ export default function DataTree() {
         cs.activeZone = null;
         cs.zoneType = null;
 
-        // White particles at full tint
+        // White particles at full tint, white lines
         particleMat.uniforms.uTintColor.value.set(1, 1, 1);
         particleMat.uniforms.uTintStrength.value = 1;
+        lineMat.uniforms.uColor.value.set(1, 1, 1);
 
         if (nameTextEl) nameTextEl.style.color = BASE_FG;
         if (subtitleEl) subtitleEl.style.color = BASE_FG;

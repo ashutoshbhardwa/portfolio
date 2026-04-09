@@ -1,7 +1,7 @@
 // ── Projection ───────────────────────────────────────────────────────────────
 export const FOV = 900;
 export const CAMERA_Z_OFFSET = 280;
-export const SCENE_SCALE_FACTOR = 0.49; // min(W,H) * this — 30% smaller than original 0.70
+export const SCENE_SCALE_FACTOR = 0.588; // min(W,H) * this — 0.49 * 1.20
 
 // ── Spring physics (cursor repulsion) ────────────────────────────────────────
 export const REPEL_R = 140;
@@ -14,7 +14,7 @@ export const PROX_R = 100;
 export const LINE_MIN_DIST = 45;  // skip pairs closer than this (prevents triangulation blobs)
 export const LINE_MAX_DIST = 90;  // connect up to this distance
 export const MAX_LINE_ALPHA = 0.85;
-export const MAX_LINES = 220;     // sparse clean connections
+export const MAX_LINES = 700;     // structural trunk→canopy lines
 export const GRID_CELL = 65;
 
 // ── Matrix rain ──────────────────────────────────────────────────────────────
