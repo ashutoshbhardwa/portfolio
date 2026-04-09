@@ -2,6 +2,7 @@
 
 import React, { useRef, useEffect, useState } from "react";
 import WorkPage from "./WorkPage";
+import ProjectDetailPage from "./ProjectDetailPage";
 import TextScramble from "./TextScramble";
 import * as THREE from "three";
 import {
@@ -202,9 +203,9 @@ function computeCardTargets(
           const pi = ci * PARTICLES_PER_CARD + row * CARD_COLS + col;
           const screenX = rect.x + (col + 0.5) * cellW;
           const screenY = rect.y + (row + 0.5) * cellH;
-          // Standard 0.85 offset — matches vertex shader's screen mapping
-          const worldX = (screenX - W * 0.58) / (SCENE_SCALE * d);
-          const worldY = (H * 0.85 - screenY) / (SCENE_SCALE * d * 1.15);
+          // 0.72 / 0.85 — must match vertex shader's screen mapping
+          const worldX = (screenX - W * 0.72) / (SCENE_SCALE * d);
+          const worldY = (H * 0.65 - screenY) / (SCENE_SCALE * d * 1.15);
           buf[pi * 3]     = worldX;
           buf[pi * 3 + 1] = worldY;
           buf[pi * 3 + 2] = 0;
@@ -269,7 +270,6 @@ export default function DataTree() {
   const vignetteRef = useRef<HTMLDivElement>(null);
   const navRef = useRef<HTMLDivElement>(null);
   const densityPillRef = useRef<HTMLDivElement>(null);
-  const modeToggleRef = useRef<HTMLDivElement>(null);
   const blurRectRef = useRef<HTMLDivElement>(null);
   const densityUpRef = useRef<() => void>(() => {});
   const densityDownRef = useRef<() => void>(() => {});
@@ -284,14 +284,13 @@ export default function DataTree() {
   const [ambientText, setAmbientText] = useState(DEFAULT_AMBIENT);
   const [ambientKey, setAmbientKey] = useState('default');
 
-  // Dark / Light mode toggle
-  const [isDarkMode, setIsDarkMode] = useState(false);
-  const isDarkModeRef = useRef(false);
-
   // Homepage reveal — triggers scramble + pill expansion when overlays first become visible
   const [homepageRevealed, setHomepageRevealed] = useState(false);
   const homepageRevealedRef = useRef(false);
   const workPageRef = useRef<HTMLDivElement>(null);
+
+  /** Zone key currently hovered — drives name scramble on home page */
+  const [hoveredZoneKey, setHoveredZoneKey] = useState<string | null>(null);
 
   // Card formation state (particle grid cards on pill hover)
   const hoveredCardRef = useRef<string | null>(null);
@@ -313,6 +312,32 @@ export default function DataTree() {
   const cardRectsRef = useRef<CardRect[]>([]);
   const cardLuminanceRef = useRef<Float32Array[]>([]);  // per-card luminance grids
   const particleBufRef = useRef<ParticleBuffers | null>(null);
+
+  // ── Project detail page state ──────────────────────────────────────────────
+  const [detailCompany, setDetailCompany] = useState<string | null>(null);
+  const [detailVisible, setDetailVisible] = useState(false);
+
+  // ── Brand-color wipe transition ───────────────────────────────────────────
+  const [wipeActive, setWipeActive] = useState(false);
+  const [wipeKey, setWipeKey] = useState(0);
+  const [wipeColor, setWipeColor] = useState('#000000');
+
+  // Block transition state
+  // ── Particle-expand transition state ────────────────────────────────────
+  // Forward: card particles turn brand color + scale up to fill screen → detail page
+  // Back:    particles contract from brand color back to card grid size → work page
+  const particleExpandRef = useRef(false);       // animation running
+  const particleExpandTickRef = useRef(0);
+  const particleExpandDirRef = useRef<'enter' | 'exit'>('enter');
+  const particleExpandCompanyRef = useRef<string | null>(null);
+  const particleExpandCoveredRef = useRef(false); // onCovered already fired
+  const [detailBrandColor, setDetailBrandColor] = useState('#000000');
+
+  // Saved particle state for restoring after detail page
+  const detailActiveCompanyRef = useRef<string | null>(null);
+  const savedDetailPosRef = useRef<Float32Array | null>(null);
+  const savedDetailFontsRef = useRef<Float32Array | null>(null);
+  const savedDetailOpacRef = useRef<Float32Array | null>(null);
 
   // Card positions state for WorkPage overlays
   const [cardPositions, setCardPositions] = useState<CardRect[]>([]);
@@ -352,7 +377,8 @@ export default function DataTree() {
     const el = watermarkRef.current;
     if (!el) return;
     el.textContent = word;
-    el.style.opacity = '1';
+    // Watermark is intentionally hidden — company name now lives in the bottom-left name scramble
+    // el.style.opacity = '1';
     if (watermarkTimeoutRef.current) clearTimeout(watermarkTimeoutRef.current);
 
     // Set target color from registry
@@ -387,6 +413,49 @@ export default function DataTree() {
     // Reset ambient text
     setAmbientText(DEFAULT_AMBIENT);
     setAmbientKey('default');
+  }
+
+  // ── Card click → brand wipe → detail page ───────────────────────────────
+  function handleCardClick(company: string) {
+    if (wipeActive || detailVisible) return;
+    const zoneColor = ZONE_COLORS[company];
+    const hex = zoneColor ? zoneColor.hex : '#111111';
+    setDetailBrandColor(hex);
+    setWipeColor(hex);
+    setWipeKey(k => k + 1);
+    setWipeActive(true);
+
+    // Mid-wipe: show detail page behind the sweeping rect
+    setTimeout(() => {
+      setDetailCompany(company);
+      setDetailVisible(true);
+    }, 320);
+
+    // Wipe finishes sweeping off-screen top
+    setTimeout(() => setWipeActive(false), 720);
+
+    // Keep particle expand running in background for state management
+    particleExpandCompanyRef.current = company;
+    particleExpandDirRef.current = 'enter';
+    particleExpandTickRef.current = 0;
+    particleExpandCoveredRef.current = false;
+    particleExpandRef.current = true;
+  }
+
+  function handleDetailBack() {
+    if (wipeActive) return;
+    setWipeKey(k => k + 1);
+    setWipeActive(true);
+
+    // Mid-wipe: hide detail page, restore work page
+    setTimeout(() => {
+      setDetailVisible(false);
+      particleExpandDirRef.current = 'exit';
+      particleExpandTickRef.current = 0;
+      particleExpandRef.current = true;
+    }, 320);
+
+    setTimeout(() => setWipeActive(false), 720);
   }
 
   useEffect(() => {
@@ -469,6 +538,7 @@ export default function DataTree() {
       renderer.setSize(W, H);
       renderer.setPixelRatio(DPR);
 
+
       // Uniforms
       const uniformScale = Math.min(W / 1920, H / 1080);
 
@@ -520,7 +590,13 @@ export default function DataTree() {
       });
 
     function initParticles(pts: RawPoint[]) {
-      pb = buildParticleSystem(pts, W || 1280, H || 800);
+      // Keep all card particles (first PARTICLES_PER_CARD) at full density for card formation.
+      // Thin the remaining tree particles by 50% — reduces visual noise on the work page
+      // without affecting card formation quality.
+      const cardSlice = pts.slice(0, PARTICLES_PER_CARD);
+      const treeSlice = pts.slice(PARTICLES_PER_CARD).filter((_, i) => i % 2 === 0);
+      const filteredPts = (cardSlice as RawPoint[]).concat(treeSlice as RawPoint[]);
+      pb = buildParticleSystem(filteredPts, W || 1280, H || 800);
       particleBufRef.current = pb;
       points = new THREE.Points(pb.geometry, particleMat);
       scene.add(points);
@@ -693,8 +769,8 @@ export default function DataTree() {
         p.depthFactor = clamp((d - 0.5) / 0.6, 0, 1);
 
         const ryFinal = ry_t * 1.15;
-        const tx = rx * d + W * 0.58;
-        const ty = -ryFinal * d + H * 0.85;
+        const tx = rx * d + W * 0.72;
+        const ty = -ryFinal * d + H * 0.65;
 
         // Scatter + brownian
         const scatterX = pb.scatterBuf[i * 2] + pb.brownianBuf[i * 2];
@@ -718,7 +794,7 @@ export default function DataTree() {
         p.screenX = cx + windX;
         p.screenY = cy + windY;
 
-        // Brownian motion — active in scatter AND disintegration, suppressed in logo mode
+        // Brownian motion — active in scatter AND disintegration, suppressed in logo/card mode
         {
           const disintActive = progress > 0.9;
           const inFormationMode = cardFormingRef.current || cardDisintegratingRef.current;
@@ -897,24 +973,23 @@ export default function DataTree() {
         if (dotEl)
           dotEl.style.transform = `scaleY(${0.5 + 0.5 * Math.sin(time * 3.2)})`;
 
-        // Update onboarding pill colors per mode
-        const dark = isDarkModeRef.current;
+        // Update onboarding pill colors — always white on black
         const obModePill = container.querySelector('.onboard-mode-pill') as HTMLElement | null;
         const obDensityPill = container.querySelector('.onboard-density-pill') as HTMLElement | null;
         const scrollText = hintEl?.querySelector('.glitch-text') as HTMLElement | null;
         if (obModePill) {
-          obModePill.style.background = dark ? '#FFFFFF' : '#000000';
-          obModePill.style.color = dark ? '#000000' : '#FFFFFF';
+          obModePill.style.background = '#FFFFFF';
+          obModePill.style.color = '#000000';
         }
         if (obDensityPill) {
-          obDensityPill.style.background = dark ? '#FFFFFF' : '#000000';
-          obDensityPill.style.color = dark ? '#000000' : '#FFFFFF';
+          obDensityPill.style.background = '#FFFFFF';
+          obDensityPill.style.color = '#000000';
         }
         if (scrollText) {
-          scrollText.style.color = dark ? '#FFFFFF' : '#000000';
+          scrollText.style.color = '#FFFFFF';
         }
         if (dotEl) {
-          dotEl.style.background = dark ? 'rgba(255,255,255,0.18)' : 'rgba(0,0,0,0.18)';
+          dotEl.style.background = 'rgba(255,255,255,0.18)';
         }
       }
 
@@ -963,34 +1038,22 @@ export default function DataTree() {
         densityPillRef.current.style.opacity = String(overlayOpacity);
         densityPillRef.current.style.pointerEvents = overlayOpacity > 0.1 ? 'auto' : 'none';
       }
-      if (modeToggleRef.current) {
-        modeToggleRef.current.style.opacity = String(overlayOpacity);
-        modeToggleRef.current.style.pointerEvents = overlayOpacity > 0.1 ? 'auto' : 'none';
-      }
       // AB mark, scroll line follow same overlay opacity
       const abMark = container.querySelector('.ab-mark') as HTMLElement | null;
       if (abMark) abMark.style.opacity = String(overlayOpacity);
       const scrollLine = container.querySelector('.scroll-line') as HTMLElement | null;
       if (scrollLine) scrollLine.style.opacity = String(overlayOpacity * 0.5);
 
-      // ── Color logic: smooth lerp background + particle tint on zone hover ──
-      // MODE: dark = dark bg / white particles / white UI
-      //        light = light bg / dark particles / dark UI
-      // EXPERIENCE: background floods with brand color, UI contrast-switches
-      //   DailyObjects INVERTS per mode (light→black bg; dark→white bg)
-      // SKILL: base bg stays, particles + overlays go brand color
+      // ── Color logic: site is always black. Brand colors tint particles + UI only. ──
+      // Background never changes on the homepage — always #0A0A0A.
+      // Zone hover (experience OR skill): particles + UI text go brand color.
+      // Default: white particles at full tint, white UI.
       const cs = colorStateRef.current;
       const lerpSpeed = COLOR_LERP_SPEED;
-      const isExperience = cs.zoneType === 'experience';
-      const dark = isDarkModeRef.current;
 
-      // Base palette per mode
-      const BASE_BG = dark ? '#0A0A0A' : '#F9F8F4';
-      const BASE_FG = dark ? '#FFFFFF' : '#0A0A0A';
-      const BASE_FG_RGB = dark ? '255,255,255' : '10,10,10';
-      const BASE_BG_R = dark ? 10 / 255 : 249 / 255;
-      const BASE_BG_G = dark ? 10 / 255 : 248 / 255;
-      const BASE_BG_B = dark ? 10 / 255 : 244 / 255;
+      // Always-black palette
+      const BASE_BG = '#0A0A0A';
+      const BASE_FG = '#FFFFFF';
 
       // Lerp strength
       cs.strength += (cs.targetStrength - cs.strength) * lerpSpeed;
@@ -1013,10 +1076,9 @@ export default function DataTree() {
       const sDashEl = container.querySelector('.scroll-dash') as HTMLElement | null;
       const abMarkEl = container.querySelector('.ab-mark') as HTMLElement | null;
       const scrollLineEl = container.querySelector('.scroll-line') as HTMLElement | null;
-      const modeToggleEl = modeToggleRef.current;
       const densityPillEl = densityPillRef.current;
 
-      // Helper: apply a color to all minor UI (arrow, dash, AB mark, scroll line, mode toggle bg)
+      // Helper: apply a color to all minor UI (arrow, dash, AB mark, scroll line)
       const applyMinorUI = (color: string) => {
         if (sDashEl) sDashEl.style.background = color;
         if (abMarkEl) abMarkEl.style.color = color;
@@ -1030,162 +1092,47 @@ export default function DataTree() {
       };
 
       if (cs.strength > 0.005) {
-        const isDailyObjects = cs.activeZone === 'DAILYOBJECTS';
-        const brandLum = 0.299 * cs.r + 0.587 * cs.g + 0.114 * cs.b;
+        // ── ZONE HOVERED: particles + UI go brand color, bg stays black ──
+        particleMat.uniforms.uTintColor.value.set(cs.r, cs.g, cs.b);
+        particleMat.uniforms.uTintStrength.value = cs.strength;
 
-        if (isExperience) {
-          // ── EXPERIENCE: background floods with brand color ──
-          // DailyObjects is special: INVERTS per mode
-          //   Light mode: black bg, white particles, white UI
-          //   Dark mode:  white bg, dark particles, dark UI
-
-          if (isDailyObjects) {
-            // DailyObjects inverts relative to current mode
-            const doBgR = dark ? 1 : 0;
-            const doBgG = dark ? 1 : 0;
-            const doBgB = dark ? 1 : 0;
-
-            if (progress < 1.0) {
-              const mixR = Math.round((BASE_BG_R + (doBgR - BASE_BG_R) * cs.strength) * 255);
-              const mixG = Math.round((BASE_BG_G + (doBgG - BASE_BG_G) * cs.strength) * 255);
-              const mixB = Math.round((BASE_BG_B + (doBgB - BASE_BG_B) * cs.strength) * 255);
-              container.style.background = `rgb(${mixR},${mixG},${mixB})`;
-              if (blurRectRef.current) blurRectRef.current.style.background = `rgb(${mixR},${mixG},${mixB})`;
-            }
-
-            // DailyObjects: adaptive UI based on effective bg luminance during transition
-            const doEffBgR = BASE_BG_R + (doBgR - BASE_BG_R) * cs.strength;
-            const doEffBgG = BASE_BG_G + (doBgG - BASE_BG_G) * cs.strength;
-            const doEffBgB = BASE_BG_B + (doBgB - BASE_BG_B) * cs.strength;
-            const doEffLum = 0.299 * doEffBgR + 0.587 * doEffBgG + 0.114 * doEffBgB;
-            const doUiColor = doEffLum < 0.45 ? '#FFFFFF' : '#0A0A0A';
-            const doUiColorInv = doEffLum < 0.45 ? '#0A0A0A' : '#FFFFFF';
-
-            if (dark) {
-              // Dark mode + DailyObjects: bg→white, particles→dark
-              particleMat.uniforms.uTintStrength.value = 0;
-            } else {
-              // Light mode + DailyObjects: bg→black, particles→white
-              particleMat.uniforms.uTintColor.value.set(1, 1, 1);
-              particleMat.uniforms.uTintStrength.value = cs.strength;
-            }
-
-            if (nameTextEl) nameTextEl.style.color = doUiColor;
-            if (subtitleEl) subtitleEl.style.color = doUiColor;
-            if (paraTextEl) { paraTextEl.style.color = doUiColorInv; paraTextEl.style.background = doUiColor; }
-            if (watermarkRef.current) watermarkRef.current.style.color = doEffLum < 0.45 ? 'rgba(255,255,255,0.18)' : 'rgba(0,0,0,0.15)';
-            if (densityPillEl) { densityPillEl.style.background = doUiColor; densityPillEl.style.color = doUiColorInv; }
-            if (modeToggleEl) { modeToggleEl.style.background = doUiColor; modeToggleEl.style.color = doUiColorInv; }
-            applyMinorUI(doUiColor);
-          } else {
-            // Non-DailyObjects experience: bg floods with brand color
-            if (progress < 1.0) {
-              const mixR = Math.round((BASE_BG_R + (cs.r - BASE_BG_R) * cs.strength) * 255);
-              const mixG = Math.round((BASE_BG_G + (cs.g - BASE_BG_G) * cs.strength) * 255);
-              const mixB = Math.round((BASE_BG_B + (cs.b - BASE_BG_B) * cs.strength) * 255);
-              container.style.background = `rgb(${mixR},${mixG},${mixB})`;
-              if (blurRectRef.current) blurRectRef.current.style.background = `rgb(${mixR},${mixG},${mixB})`;
-            }
-
-            // Particles: in dark mode they're white by default, need to un-tint for colored bg
-            if (dark) {
-              // Lerp tint back toward 0 so natural dark texture shows against colored bg
-              particleMat.uniforms.uTintStrength.value = Math.max(0, 1 - cs.strength);
-            } else {
-              particleMat.uniforms.uTintStrength.value = 0;
-            }
-
-            // UI text: blend between BASE_FG and contrast color based on strength
-            // This prevents white text lingering on a light bg during fade-out
-            const effBgR = (BASE_BG_R + (cs.r - BASE_BG_R) * cs.strength);
-            const effBgG = (BASE_BG_G + (cs.g - BASE_BG_G) * cs.strength);
-            const effBgB = (BASE_BG_B + (cs.b - BASE_BG_B) * cs.strength);
-            const effBgLum = 0.299 * effBgR + 0.587 * effBgG + 0.114 * effBgB;
-            const textOnBg = effBgLum < 0.45 ? '#FFFFFF' : '#0A0A0A';
-            if (nameTextEl) nameTextEl.style.color = textOnBg;
-            if (subtitleEl) subtitleEl.style.color = textOnBg;
-            const bgEffDark = effBgLum < 0.35;
-            if (paraTextEl) {
-              if (bgEffDark) {
-                paraTextEl.style.color = '#000000';
-                paraTextEl.style.background = '#FFFFFF';
-              } else {
-                paraTextEl.style.color = '#FFFFFF';
-                paraTextEl.style.background = `rgba(${Math.round(cs.r * 0.3 * 255)},${Math.round(cs.g * 0.3 * 255)},${Math.round(cs.b * 0.3 * 255)},0.85)`;
-              }
-            }
-            if (watermarkRef.current) {
-              watermarkRef.current.style.color = bgEffDark
-                ? 'rgba(255,255,255,0.18)'
-                : `rgba(${Math.round(cs.r * 0.6 * 255)},${Math.round(cs.g * 0.6 * 255)},${Math.round(cs.b * 0.6 * 255)},0.35)`;
-            }
-            if (densityPillEl) { densityPillEl.style.background = textOnBg; densityPillEl.style.color = effBgLum < 0.45 ? '#000000' : '#FFFFFF'; }
-            if (modeToggleEl) { modeToggleEl.style.background = textOnBg; modeToggleEl.style.color = effBgLum < 0.45 ? '#000000' : '#FFFFFF'; }
-            applyMinorUI(textOnBg);
-          }
-        } else {
-          // ── SKILL: base bg stays, particles + overlays go brand color ──
-          particleMat.uniforms.uTintColor.value.set(cs.r, cs.g, cs.b);
-          particleMat.uniforms.uTintStrength.value = dark ? 1 : cs.strength;
-
-          if (nameTextEl) nameTextEl.style.color = `rgb(${r255},${g255},${b255})`;
-          if (subtitleEl) subtitleEl.style.color = `rgb(${r255},${g255},${b255})`;
-          if (paraTextEl) {
-            paraTextEl.style.color = dark ? '#000000' : '#FFFFFF';
-            paraTextEl.style.background = `rgb(${r255},${g255},${b255})`;
-          }
-          if (watermarkRef.current) watermarkRef.current.style.color = `rgba(${r255},${g255},${b255},0.22)`;
-          if (densityPillEl) { densityPillEl.style.background = `rgb(${r255},${g255},${b255})`; densityPillEl.style.color = dark ? '#000000' : '#FFFFFF'; }
-          if (modeToggleEl) { modeToggleEl.style.background = `rgb(${r255},${g255},${b255})`; modeToggleEl.style.color = dark ? '#000000' : '#FFFFFF'; }
-          applyMinorUI(`rgb(${r255},${g255},${b255})`);
+        const brandColor = `rgb(${r255},${g255},${b255})`;
+        if (nameTextEl) nameTextEl.style.color = brandColor;
+        if (subtitleEl) subtitleEl.style.color = brandColor;
+        if (paraTextEl) {
+          paraTextEl.style.color = '#000000';
+          paraTextEl.style.background = brandColor;
         }
+        if (watermarkRef.current) watermarkRef.current.style.color = `rgba(${r255},${g255},${b255},0.22)`;
+        if (densityPillEl) { densityPillEl.style.background = brandColor; densityPillEl.style.color = '#000000'; }
+        applyMinorUI(brandColor);
       } else {
-        // ── DEFAULT: no zone hovered — base palette ──
+        // ── DEFAULT: no zone hovered — white on black ──
         cs.activeZone = null;
         cs.zoneType = null;
 
-        // Dark mode: white particles (tint white at 1.0); Light mode: natural dark (tint 0)
-        if (dark) {
-          particleMat.uniforms.uTintColor.value.set(1, 1, 1);
-          particleMat.uniforms.uTintStrength.value = 1;
-        } else {
-          particleMat.uniforms.uTintStrength.value = 0;
-        }
+        // White particles at full tint
+        particleMat.uniforms.uTintColor.value.set(1, 1, 1);
+        particleMat.uniforms.uTintStrength.value = 1;
 
         if (nameTextEl) nameTextEl.style.color = BASE_FG;
         if (subtitleEl) subtitleEl.style.color = BASE_FG;
-        // Paragraph: inverted highlight (dark mode → white bg/black text; light mode → black bg/white text)
-        if (paraTextEl) {
-          paraTextEl.style.color = dark ? '#000000' : '#FFFFFF';
-          paraTextEl.style.background = BASE_FG;
-        }
-        if (watermarkRef.current) watermarkRef.current.style.color = `rgba(${BASE_FG_RGB},0.22)`;
-        if (densityPillEl) { densityPillEl.style.background = BASE_FG; densityPillEl.style.color = dark ? '#000000' : '#FFFFFF'; }
-        if (modeToggleEl) { modeToggleEl.style.background = BASE_FG; modeToggleEl.style.color = dark ? '#000000' : '#FFFFFF'; }
+        if (paraTextEl) { paraTextEl.style.color = '#000000'; paraTextEl.style.background = BASE_FG; }
+        if (watermarkRef.current) watermarkRef.current.style.color = 'rgba(255,255,255,0.22)';
+        if (densityPillEl) { densityPillEl.style.background = BASE_FG; densityPillEl.style.color = '#000000'; }
         applyMinorUI(BASE_FG);
       }
 
-      // ── Organic background transition: home base → black (work page) ──
-      // Dark mode: already dark, so transition is subtle
-      // Light mode: #F9F8F4 → black
+      // ── Background: always black → stays black into work page ──
+      // Home is #0A0A0A. On scroll to work it transitions to pure #000000.
       const workBgT = clamp((progress - 1.0) / 0.3, 0, 1);
       const smoothBgT = workBgT * workBgT * (3 - 2 * workBgT); // smoothstep
       if (progress >= 0.95) {
-        if (dark) {
-          // Dark → stays dark (10,10,10 → 0,0,0)
-          const bgV = Math.round(10 * (1 - smoothBgT));
-          container.style.background = `rgb(${bgV},${bgV},${bgV})`;
-          if (blurRectRef.current) blurRectRef.current.style.background = `rgb(${bgV},${bgV},${bgV})`;
-        } else {
-          // Light → transitions to black (F9F8F4 → 0,0,0)
-          const lr = Math.round(249 * (1 - smoothBgT));
-          const lg = Math.round(248 * (1 - smoothBgT));
-          const lb = Math.round(244 * (1 - smoothBgT));
-          container.style.background = `rgb(${lr},${lg},${lb})`;
-          if (blurRectRef.current) blurRectRef.current.style.background = `rgb(${lr},${lg},${lb})`;
-        }
-      } else if (cs.strength < 0.005) {
-        // Home screen default (no zone hovered)
+        const bgV = Math.round(10 * (1 - smoothBgT));
+        container.style.background = `rgb(${bgV},${bgV},${bgV})`;
+        if (blurRectRef.current) blurRectRef.current.style.background = `rgb(${bgV},${bgV},${bgV})`;
+      } else {
+        // Always black on homepage (brand color never floods the background)
         container.style.background = BASE_BG;
         if (blurRectRef.current) blurRectRef.current.style.background = BASE_BG;
       }
@@ -1205,12 +1152,10 @@ export default function DataTree() {
           el.style.setProperty('--wp-pill-text', brandIsDark ? '#000000' : '#ffffff');
           el.style.setProperty('--wp-toggle-bg', `rgba(${r255},${g255},${b255},0.2)`);
         } else {
-          // Default: mode-aware
-          const fg = isDarkModeRef.current ? '#ffffff' : '#0A0A0A';
-          const fgInv = isDarkModeRef.current ? '#000000' : '#ffffff';
-          el.style.setProperty('--wp-text', fg);
-          el.style.setProperty('--wp-pill-bg', fg);
-          el.style.setProperty('--wp-pill-text', fgInv);
+          // Default: always dark (white text on black work page)
+          el.style.setProperty('--wp-text', '#ffffff');
+          el.style.setProperty('--wp-pill-bg', '#ffffff');
+          el.style.setProperty('--wp-pill-text', '#000000');
           el.style.setProperty('--wp-toggle-bg', 'transparent');
         }
       }
@@ -1339,12 +1284,23 @@ export default function DataTree() {
         scrollUnlocked = (time - treeFormedAt) >= 5.0;
       }
 
-      if (progress > 0.85) targetRotY += AUTO_ROTATE_SPEED;
+      if (progress > 0.85 && !cardDisintegratingRef.current) targetRotY += AUTO_ROTATE_SPEED;
       rotY += (targetRotY - rotY) * ROT_LERP;
       rotX += (targetRotX - rotX) * ROT_LERP;
 
       // CPU work
       updateCPU();
+
+      // ── Home page opacity: scale to ~0 at progress=0 so initial screen is nearly empty.
+      // WebGL min point size is 1px so density-scale alone can't hide particles.
+      // This directly multiplies opacityBuf after the CPU update overwrites it each frame.
+      if (pb && progress < 0.35 && !cardFormingRef.current && !cardDisintegratingRef.current) {
+        const showT = clamp(progress / 0.35, 0, 1);
+        const opScale = showT * showT; // quadratic — near-zero at start, 1.0 at 0.35
+        const opBuf = pb.opacityBuf;
+        for (let i = 0; i < pb.count; i++) opBuf[i] *= opScale;
+        (pb.geometry.getAttribute('aFadeOpacity') as THREE.BufferAttribute).needsUpdate = true;
+      }
 
       // ── Clear card/hover state when scrolling away from Work page ────────
       if (progress < 1.2 && hoveredCardRef.current) {
@@ -1352,8 +1308,8 @@ export default function DataTree() {
         setHoveredCompany(null);
       }
 
-      // ── Card formation state machine ──────────────────────────────────────
-      if (pb) {
+      // ── Card formation state machine (PAUSED during block transition) ─────
+      if (pb && !particleExpandRef.current) {
         const posArr = pb.geometry.getAttribute('position').array as Float32Array;
         const fontArr = pb.geometry.getAttribute('aFontSize').array as Float32Array;
         const wantCompany = (progress >= 1.3) ? hoveredCardRef.current : null;
@@ -1394,16 +1350,19 @@ export default function DataTree() {
             disintTickRef.current = 0;
             activeCardCompanyRef.current = null;
 
-            // Gentle velocity kick — ONLY for card particles, not hidden ones
-            // Also scale up card particle fonts by 1.5x for a bolder scatter start
+            // Snap rotY to 0 so the cfp-unwind rotation is minimal (no accumulated 720° spin)
+            rotY = 0;
+            targetRotY = 0;
+
+            // Scatter kick — fast enough to pop visibly, slow enough to stay on screen
             const velBuf = new Float32Array(pb.count * 3);
             for (let i = 0; i < cardPtCount; i++) {
               const angle = Math.random() * Math.PI * 2;
-              const speed = 0.3 + Math.random() * 0.8;
+              const speed = 0.5 + Math.random() * 1.1;
               velBuf[i * 3]     = Math.cos(angle) * speed;
-              velBuf[i * 3 + 1] = Math.sin(angle) * speed * 0.6;
-              velBuf[i * 3 + 2] = (Math.random() - 0.5) * 0.4;
-              fontArr[i] *= 1.5;  // 50% bigger at scatter start, lerps back during converge
+              velBuf[i * 3 + 1] = Math.sin(angle) * speed * 0.7;
+              velBuf[i * 3 + 2] = (Math.random() - 0.5) * 0.15;
+              fontArr[i] *= 1.2;
             }
             disintVelocitiesRef.current = velBuf;
 
@@ -1430,41 +1389,38 @@ export default function DataTree() {
           const cardPtCount = disintCardCountRef.current;
           disintTickRef.current++;
 
-          const DRIFT_TICKS = 20;   // gentle drift phase
-          const TOTAL_TICKS = 70;   // full animation ~1.2s at 60fps
-          const t = Math.min(tick / TOTAL_TICKS, 1);
+          // ── Pop → drift → reconverge. No per-particle RNG (performance). ──
+          const SCATTER_TICKS = 14;  // velocity-driven scatter phase
+          const TOTAL_TICKS   = 55;  // ~0.9s at 60fps
+          const t = tick / TOTAL_TICKS;
 
           if (tick < TOTAL_TICKS) {
-            // ── Card particles: gentle scatter then converge ──
+            // ── Card particles ──
             for (let i = 0; i < cardPtCount; i++) {
               const i3 = i * 3;
 
-              if (tick < DRIFT_TICKS && vel) {
-                // Gentle drift with strong damping
-                vel[i3]     *= 0.92;
-                vel[i3 + 1] *= 0.92;
-                vel[i3 + 2] *= 0.92;
+              // Scatter: apply velocity with fast damping → particles pop then slow
+              if (tick < SCATTER_TICKS && vel) {
+                vel[i3]     *= 0.86;
+                vel[i3 + 1] *= 0.86;
+                vel[i3 + 2] *= 0.86;
                 posArr[i3]     += vel[i3];
                 posArr[i3 + 1] += vel[i3 + 1];
                 posArr[i3 + 2] += vel[i3 + 2];
               }
 
-              // Smooth converge toward tree positions — ease-in
-              const ease = t * t;  // quadratic ease-in: slow start, fast finish
-              const cf = 0.02 + ease * 0.10;
+              // Converge: quadratic ease-in — nearly still at start, pulls hard at end
+              const ease = t * t;
+              const cf = 0.012 + ease * 0.11;
               posArr[i3]     += (saved[i3]     - posArr[i3])     * cf;
               posArr[i3 + 1] += (saved[i3 + 1] - posArr[i3 + 1]) * cf;
               posArr[i3 + 2] += (saved[i3 + 2] - posArr[i3 + 2]) * cf;
-
-              // Font sizes: lerp gently back to tree sizes
-              if (savedFonts) fontArr[i] += (savedFonts[i] - fontArr[i]) * (cf * 0.8);
-              // Opacity: lerp back
-              if (savedOpac) pb.opacityBuf[i] += (savedOpac[i] - pb.opacityBuf[i]) * cf;
+              if (savedFonts) fontArr[i] += (savedFonts[i] - fontArr[i]) * cf;
+              if (savedOpac)  pb.opacityBuf[i] += (savedOpac[i] - pb.opacityBuf[i]) * cf;
             }
 
-            // ── Hidden particles: fade in gradually at their tree positions ──
-            // Positions already snapped to saved on trigger; just fade opacity in
-            const fadeInT = clamp((tick - 10) / 40, 0, 1);  // starts after tick 10, takes 40 ticks
+            // ── Hidden particles fade in from tick 15 ──
+            const fadeInT = clamp((tick - 15) / 40, 0, 1);
             for (let i = cardPtCount; i < pb.count; i++) {
               if (savedFonts) fontArr[i] += (savedFonts[i] - fontArr[i]) * 0.06;
               if (savedOpac) pb.opacityBuf[i] = savedOpac[i] * fadeInT;
@@ -1474,7 +1430,8 @@ export default function DataTree() {
             (pb.geometry.getAttribute('aFontSize') as THREE.BufferAttribute).needsUpdate = true;
             (pb.geometry.getAttribute('aFadeOpacity') as THREE.BufferAttribute).needsUpdate = true;
           } else {
-            // Animation complete — snap to exact saved state
+            // Animation complete — card particles are already at opacity 0, hidden ones at full.
+            // Snap positions cleanly (invisible since card particles are transparent).
             posArr.set(saved);
             if (savedFonts) fontArr.set(savedFonts);
             if (savedOpac) pb.opacityBuf.set(savedOpac);
@@ -1569,29 +1526,146 @@ export default function DataTree() {
         }
       }
 
+      // ── PARTICLE EXPAND TRANSITION ─────────────────────────────────────────
+      // Forward (enter): card particles tint to brand color + scale up to fill screen
+      // Back (exit):     particles contract from brand color back to card grid
+      const EXPAND_FRAMES = 38;          // ~630ms at 60fps
+      const COVERED_FRAME = 28;          // frame when detail page shows (particles ~full-screen)
+      const CONTRACT_FRAMES = 34;        // back animation duration
+
+      if (particleExpandRef.current && pb) {
+        const tick = particleExpandTickRef.current++;
+        const dir = particleExpandDirRef.current;
+        const company = particleExpandCompanyRef.current;
+        const numCards = company ? Math.min(COMPANY_PROJECTS[company]?.length ?? 0, 1) : 0;
+        const cardPtCount = numCards * PARTICLES_PER_CARD;
+        const zc = company ? ZONE_COLORS[company] : null;
+
+        if (dir === 'enter') {
+          const t = Math.min(tick / EXPAND_FRAMES, 1);
+          // Ease-in-out quad
+          const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+
+          // 1. Tint all card particles to brand color, ramp to full strength
+          if (zc) {
+            particleMat.uniforms.uTintColor.value.set(zc.r, zc.g, zc.b);
+            particleMat.uniforms.uTintStrength.value = Math.min(1, eased * 1.8);
+          }
+
+          // 2. Scale up — particles grow from card size to screen-filling
+          particleMat.uniforms.uDensityScale.value = 1.0 + eased * 22.0;
+
+          // 3. All card particles → 100% opaque
+          for (let i = 0; i < cardPtCount; i++) {
+            pb.opacityBuf[i] = 1.0;
+          }
+          (pb.geometry.getAttribute('aFadeOpacity') as THREE.BufferAttribute).needsUpdate = true;
+
+          // 4. At COVERED_FRAME: save state + show detail page behind the expanded particles
+          if (tick === COVERED_FRAME && !particleExpandCoveredRef.current) {
+            particleExpandCoveredRef.current = true;
+            const posArr2 = pb.geometry.getAttribute('position').array as Float32Array;
+            const fontArr2 = pb.geometry.getAttribute('aFontSize').array as Float32Array;
+            savedDetailPosRef.current = new Float32Array(posArr2);
+            savedDetailFontsRef.current = new Float32Array(fontArr2);
+            savedDetailOpacRef.current = new Float32Array(pb.opacityBuf);
+            detailActiveCompanyRef.current = company;
+            setDetailCompany(company);
+            setDetailVisible(true);
+          }
+
+          // 5. Animation complete
+          if (t >= 1) {
+            particleExpandRef.current = false;
+          }
+
+        } else {
+          // EXIT: particles contract from large brand-color back to card grid
+          const t = Math.min(tick / CONTRACT_FRAMES, 1);
+          const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+
+          // Contract density scale back to card-formation scale (1.0)
+          particleMat.uniforms.uDensityScale.value = 1.0 + (1 - eased) * 22.0;
+
+          // Tint strength fades out as we contract
+          if (zc) {
+            particleMat.uniforms.uTintColor.value.set(zc.r, zc.g, zc.b);
+            particleMat.uniforms.uTintStrength.value = Math.max(0, (1 - eased) * 1.0);
+          }
+
+          // At midpoint (t≈0.5): restore full 3D tree state behind the contracting particles
+          // so when they fully shrink, the work page tree is ready
+          if (tick === Math.round(CONTRACT_FRAMES * 0.4) && savedWorldPosRef.current) {
+            const posArr2 = pb.geometry.getAttribute('position').array as Float32Array;
+            const fontArr2 = pb.geometry.getAttribute('aFontSize').array as Float32Array;
+            posArr2.set(savedWorldPosRef.current);
+            if (savedFontSizesRef.current) fontArr2.set(savedFontSizesRef.current);
+            if (savedOpacityRef.current) pb.opacityBuf.set(savedOpacityRef.current);
+            (pb.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
+            (pb.geometry.getAttribute('aFontSize') as THREE.BufferAttribute).needsUpdate = true;
+            (pb.geometry.getAttribute('aFadeOpacity') as THREE.BufferAttribute).needsUpdate = true;
+            // Clear card state — tree restored
+            cardFormingRef.current = false;
+            cardDisintegratingRef.current = false;
+            cardFormProgressRef.current = 0;
+            activeCardCompanyRef.current = null;
+            savedWorldPosRef.current = null;
+            savedFontSizesRef.current = null;
+            savedOpacityRef.current = null;
+            hoveredCardRef.current = null;
+            setHoveredCompany(null);
+            setDetailVisible(false);
+            setDetailCompany(null);
+          }
+
+          // Animation complete
+          if (t >= 1) {
+            particleExpandRef.current = false;
+            particleExpandCoveredRef.current = false;
+            detailActiveCompanyRef.current = null;
+            savedDetailPosRef.current = null;
+            savedDetailFontsRef.current = null;
+            savedDetailOpacRef.current = null;
+            // Ensure density scale is fully restored
+            particleMat.uniforms.uDensityScale.value = densityScale;
+            particleMat.uniforms.uTintStrength.value = 0;
+          }
+        }
+      }
+
       // Hide watermark during card formation or disintegration
       if (watermarkRef.current && (cardFormingRef.current || cardDisintegratingRef.current || cardFormProgressRef.current > 0)) {
         watermarkRef.current.style.opacity = '0';
       }
 
-      // Lerp card formation progress
-      if (cardFormingRef.current) {
-        cardFormProgressRef.current = Math.min(1, cardFormProgressRef.current + 0.04);
-      } else if (!cardDisintegratingRef.current) {
-        cardFormProgressRef.current = Math.max(0, cardFormProgressRef.current - 0.06);
-      } else {
-        // During disintegration, fade cfp out slowly to match the 70-tick animation
-        // and avoid abrupt background/glow transitions
-        cardFormProgressRef.current = Math.max(0, cardFormProgressRef.current - 0.015);
+      // Lerp card formation progress (pause during particle expand)
+      if (!particleExpandRef.current) {
+        if (cardFormingRef.current) {
+          cardFormProgressRef.current = Math.min(1, cardFormProgressRef.current + 0.04);
+        } else if (!cardDisintegratingRef.current) {
+          cardFormProgressRef.current = Math.max(0, cardFormProgressRef.current - 0.06);
+        } else {
+          cardFormProgressRef.current = Math.max(0, cardFormProgressRef.current - 0.015);
+        }
       }
       const cfp = cardFormProgressRef.current;
 
       // Uniforms
       particleMat.uniforms.uProgress.value = progress;
+      // Density scale: tiny on initial home scatter → grows as tree forms → small on work page
+      if (!cardFormingRef.current && !cardDisintegratingRef.current && !particleExpandRef.current && cfp < 0.05) {
+        const workT  = clamp((progress - 1.0) / 0.3, 0, 1);
+        const homeT  = clamp(progress / 0.85, 0, 1);
+        const homeEased = homeT * homeT; // quadratic: slow reveal, dramatic finish
+        const homeDensity = 0.04 + (densityScale - 0.04) * homeEased; // 0.04 → densityScale
+        const workDensity = 0.8;
+        particleMat.uniforms.uDensityScale.value = homeDensity * (1 - workT) + workDensity * workT;
+      }
       // When cards forming, lerp rotation toward 0 (front-facing)
       particleMat.uniforms.uRotY.value = cfp > 0 ? rotY * (1 - cfp) : rotY;
       particleMat.uniforms.uRotX.value = cfp > 0 ? rotX * (1 - cfp) : rotX;
       particleMat.uniforms.uTime.value = time;
+
       const disint = clamp((progress - 0.86) / 0.8, 0, 1);
       particleMat.uniforms.uDisintegration.value = cfp > 0 ? Math.max(0, disint - disint * cfp) : disint;
       if (progress >= 1.50) targetProgress = 1.50;
@@ -1621,11 +1695,9 @@ export default function DataTree() {
         }
       }
 
-      // Canvas background: work page is always dark regardless of mode
-      // Dark mode: near-opaque always; Light mode: goes opaque as you scroll to work
-      const clearAlpha = isDarkModeRef.current
-        ? Math.max(cfp, scrollWhiteEased, 0.85)
-        : Math.max(cfp, scrollWhiteEased); // light mode: opaque on work page, transparent on home
+      // Canvas always renders on a black background — near-opaque at 0.85 on home,
+      // fully opaque once card formation or scroll-to-work kicks in.
+      const clearAlpha = Math.max(cfp, scrollWhiteEased, 0.85);
       renderer.setClearColor(0x000000, clearAlpha);
 
       // Smart lines
@@ -1672,6 +1744,17 @@ export default function DataTree() {
   }, []);
 
   // ── JSX ────────────────────────────────────────────────────────────────────
+  const wipeKeyframes = `
+    @keyframes brandWipeThrough {
+      0%   { transform: translateY(100%); filter: blur(0px); }
+      14%  { filter: blur(22px); }
+      30%  { transform: translateY(0%);   filter: blur(6px); }
+      48%  { filter: blur(18px); }
+      72%  { filter: blur(4px); }
+      100% { transform: translateY(-100%); filter: blur(0px); }
+    }
+  `;
+
   return (
     <div
       ref={containerRef}
@@ -1681,7 +1764,7 @@ export default function DataTree() {
         left: 0,
         width: "100vw",
         height: "100vh",
-        background: isDarkMode ? '#0A0A0A' : '#F9F8F4',
+        background: '#0A0A0A',
         overflow: "hidden",
         touchAction: "pan-y",
         userSelect: "none",
@@ -1689,6 +1772,7 @@ export default function DataTree() {
         transition: 'background 0.5s ease',
       }}
     >
+      <style>{wipeKeyframes}</style>
       {/* Tree layer (Three.js WebGL) */}
       <canvas
         ref={treeCanvasRef}
@@ -1705,22 +1789,37 @@ export default function DataTree() {
           const project = COMPANY_PROJECTS[hoveredCompany]?.[i];
           if (!project) return null;
           return (
-            <img
-              key={`card-img-${i}`}
-              src={project.image}
-              alt=""
-              style={{
-                position: 'absolute',
-                left: rect.x, top: rect.y,
-                width: rect.w, height: rect.h,
-                objectFit: 'cover',
-                mixBlendMode: 'multiply',
-                opacity: cardImagesVisible ? 1 : 0,
-                transition: 'opacity 0.6s ease',
-                pointerEvents: 'none',
-                zIndex: 3,
-              }}
-            />
+            <React.Fragment key={`card-frag-${i}`}>
+              <img
+                key={`card-img-${i}`}
+                src={project.image}
+                alt=""
+                style={{
+                  position: 'absolute',
+                  left: rect.x, top: rect.y,
+                  width: rect.w, height: rect.h,
+                  objectFit: 'cover',
+                  mixBlendMode: 'multiply',
+                  opacity: cardImagesVisible ? 1 : 0,
+                  transition: 'opacity 0.6s ease',
+                  pointerEvents: 'none',
+                  zIndex: 3,
+                }}
+              />
+              {/* Clickable overlay on card area — triggers detail page */}
+              <div
+                key={`card-click-${i}`}
+                onClick={() => handleCardClick(hoveredCompany!)}
+                style={{
+                  position: 'absolute',
+                  left: rect.x, top: rect.y,
+                  width: rect.w, height: rect.h,
+                  zIndex: 7,
+                  cursor: 'pointer',
+                  background: 'transparent',
+                }}
+              />
+            </React.Fragment>
           );
         })
       )}
@@ -1735,7 +1834,7 @@ export default function DataTree() {
           transform: 'translate(-50%, -50%)',
           width: 1269,
           height: 410,
-          background: isDarkMode ? '#0A0A0A' : '#f9f8f4',
+          background: '#0A0A0A',
           filter: 'blur(72px)',
           opacity: 0.8,
           zIndex: 1,
@@ -1769,105 +1868,12 @@ export default function DataTree() {
             fontWeight: 400,
             fontSize: 34.56,
             letterSpacing: '-0.08em',
-            color: '#000000',
+            color: '#FFFFFF',
             whiteSpace: 'nowrap',
           }}
         >
           SCROLL
         </span>
-
-        {/* Controls stack: two pills vertically centered */}
-        <div style={{
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 10,
-          alignItems: 'center',
-          marginTop: 12,
-        }}>
-          {/* MODE pill — night/day toggle */}
-          <div
-            className="onboard-mode-pill"
-            onClick={() => {
-              const next = !isDarkModeRef.current;
-              isDarkModeRef.current = next;
-              setIsDarkMode(next);
-            }}
-            style={{
-              width: 160,
-              height: 44,
-              borderRadius: 22,
-              background: '#000000',
-              color: '#ffffff',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 8,
-              fontFamily: 'Inter, "Helvetica Neue", sans-serif',
-              fontWeight: 500,
-              fontSize: 12,
-              letterSpacing: '0.06em',
-              cursor: 'pointer',
-              transition: 'background 0.4s ease, color 0.4s ease',
-            }}
-          >
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-              {isDarkMode ? (
-                <>
-                  <circle cx="8" cy="8" r="3.5" stroke="currentColor" strokeWidth="1.5" fill="none" />
-                  <line x1="8" y1="1" x2="8" y2="3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                  <line x1="8" y1="13" x2="8" y2="15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                  <line x1="1" y1="8" x2="3" y2="8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                  <line x1="13" y1="8" x2="15" y2="8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                </>
-              ) : (
-                <path d="M13 8.5A5.5 5.5 0 1 1 7.5 3c.28 0 .55.02.82.07A4.5 4.5 0 0 0 12.93 7.68c.05.27.07.54.07.82z" stroke="currentColor" strokeWidth="1.3" fill="none" />
-              )}
-            </svg>
-            {isDarkMode ? 'DAY MODE' : 'NIGHT MODE'}
-          </div>
-
-          {/* DENSITY pill — minus / label / plus */}
-          <div
-            className="onboard-density-pill"
-            style={{
-              width: 160,
-              height: 44,
-              borderRadius: 22,
-              background: '#000000',
-              color: '#ffffff',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              padding: '0 4px',
-              fontFamily: 'Inter, "Helvetica Neue", sans-serif',
-              fontWeight: 500,
-              fontSize: 12,
-              letterSpacing: '0.06em',
-              cursor: 'default',
-              transition: 'background 0.4s ease, color 0.4s ease',
-            }}
-          >
-            <div
-              onClick={() => densityDownRef.current()}
-              style={{
-                width: 34, height: 34, borderRadius: '50%',
-                background: 'rgba(128,128,128,0.2)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                cursor: 'pointer', fontSize: 16, fontWeight: 300, userSelect: 'none',
-              }}
-            >−</div>
-            <span>DENSITY</span>
-            <div
-              onClick={() => densityUpRef.current()}
-              style={{
-                width: 34, height: 34, borderRadius: '50%',
-                background: 'rgba(128,128,128,0.2)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                cursor: 'pointer', fontSize: 16, fontWeight: 300, userSelect: 'none',
-              }}
-            >+</div>
-          </div>
-        </div>
 
         {/* Pulse line */}
         <span
@@ -1876,55 +1882,12 @@ export default function DataTree() {
             display: 'block',
             width: 1,
             height: 14,
-            background: 'rgba(0,0,0,0.18)',
+            background: 'rgba(255,255,255,0.18)',
           }}
         />
       </div>
 
-      {/* ═══════════ TOP-RIGHT: Mode toggle + Density pill ═══════════ */}
-
-      {/* Dark/Light mode toggle */}
-      <div
-        ref={modeToggleRef}
-        className="mode-toggle"
-        onClick={() => {
-          const next = !isDarkModeRef.current;
-          isDarkModeRef.current = next;
-          setIsDarkMode(next);
-        }}
-        style={{
-          position: 'absolute',
-          top: 'clamp(24px, 3vh, 48px)',
-          right: 'clamp(24px, 2.6vw, 48px)',
-          zIndex: 5,
-          opacity: 0,
-          width: 36,
-          height: 36,
-          borderRadius: '50%',
-          background: '#0A0A0A',
-          color: '#FFFFFF',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          cursor: 'pointer',
-          pointerEvents: 'auto',
-          transition: 'background 0.5s ease, color 0.5s ease, transform 0.3s ease',
-        }}
-      >
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ display: 'block' }}>
-          {isDarkMode ? (
-            <>
-              <circle cx="8" cy="8" r="3.5" stroke="currentColor" strokeWidth="1.5" fill="none" />
-              <line x1="8" y1="1" x2="8" y2="3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-              <line x1="8" y1="13" x2="8" y2="15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-              <line x1="1" y1="8" x2="3" y2="8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-              <line x1="13" y1="8" x2="15" y2="8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </>
-          ) : (
-            <path d="M13 8.5A5.5 5.5 0 1 1 7.5 3c.28 0 .55.02.82.07A4.5 4.5 0 0 0 12.93 7.68c.05.27.07.54.07.82z" stroke="currentColor" strokeWidth="1.3" fill="none" />
-          )}
-        </svg>
-      </div>
+      {/* ═══════════ TOP-RIGHT: Density pill ═══════════ */}
 
       {/* Density pill */}
       <div
@@ -1932,13 +1895,13 @@ export default function DataTree() {
         style={{
           position: 'absolute',
           top: 'clamp(24px, 3vh, 48px)',
-          right: `calc(clamp(24px, 2.6vw, 48px) + 48px)`,
+          right: 'clamp(24px, 2.6vw, 48px)',
           zIndex: 5,
           opacity: 0,
           height: 36,
           borderRadius: 18,
-          background: '#0A0A0A',
-          color: '#FFFFFF',
+          background: '#FFFFFF',
+          color: '#000000',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
@@ -1984,7 +1947,7 @@ export default function DataTree() {
           left: '-5vw',
           width: '110vw',
           height: 'clamp(200px, 32vh, 340px)',
-          background: isDarkMode ? '#0A0A0A' : '#F9F8F4',
+          background: '#0A0A0A',
           filter: 'blur(clamp(44px, 3.75vw, 72px))',
           zIndex: 1,
           pointerEvents: 'none',
@@ -2008,30 +1971,92 @@ export default function DataTree() {
           alignItems: 'flex-end',
         }}
       >
-        {/* Left: Subtitle above Name (Figma order) */}
-        <div style={{ flexShrink: 0 }}>
-          <div className="subtitle-overlay" style={{
-            fontFamily: 'Inter, "Helvetica Neue", Helvetica, Arial, sans-serif',
-            fontWeight: 400,
-            fontSize: 'clamp(14px, 1.2vw, 22px)',
-            letterSpacing: '0em',
-            textTransform: 'uppercase',
-            marginBottom: 'clamp(8px, 1.2vh, 16px)',
-          }}>
-            <TextScramble trigger={homepageRevealed} duration={0.8} speed={0.04}>MULTI-DISCIPLINARY DESIGNER</TextScramble>
-          </div>
-          <div className="home-name-text" style={{
-            fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif',
-            fontWeight: 900,
-            fontSize: 'clamp(63px, 9.75vh, 135px)',
-            lineHeight: 0.88,
-            letterSpacing: '-0.05em',
-          }}>
-            <TextScramble trigger={homepageRevealed} duration={1.2} speed={0.05} as="span">ASHUTOSH</TextScramble>
-            <br />
-            <TextScramble trigger={homepageRevealed} duration={1.2} speed={0.05} as="span">BHARDWAJ</TextScramble>
-          </div>
-        </div>
+        {/* Left: Subtitle above Name — scrambles to company/skill on hover */}
+        {(() => {
+          // Name lines for each hover target
+          const NAME_LINES: Record<string, [string, string]> = {
+            // Experience
+            'DAILYOBJECTS': ['DAILY', 'OBJECTS'],
+            'CREPDOGCREW':  ['CREPDOG', 'CREW'],
+            'PROBO':        ['PROBO', ''],
+            'STABLE MONEY': ['STABLE', 'MONEY'],
+            'OTHER':        ['OTHER', ''],
+            // Skills
+            'MOTION DESIGN': ['MOTION', 'DESIGN'],
+            'SYSTEMS':       ['SYSTEMS', ''],
+            '3D':            ['3D', ''],
+            'BRAND':         ['BRAND', ''],
+            'GLITCH':        ['GLITCH', ''],
+          };
+          const COMPANY_YEARS: Record<string, number> = {
+            'DAILYOBJECTS': 2022, 'CREPDOGCREW': 2024, 'PROBO': 2025,
+            'STABLE MONEY': 2026, 'OTHER': 2021,
+            'MOTION DESIGN': 2022, 'SYSTEMS': 2023, '3D': 2021,
+            'BRAND': 2024, 'GLITCH': 2022,
+          };
+          // Zone hover (home page) takes priority, then work-page pill hover
+          const activeKey = hoveredZoneKey ?? hoveredCompany;
+          const [line1, line2] = activeKey
+            ? (NAME_LINES[activeKey] ?? [activeKey, ''])
+            : ['ASHUTOSH', 'BHARDWAJ'];
+          const subtitle = activeKey
+            ? `${COMPANY_YEARS[activeKey] ?? ''}  ·  ${activeKey}`
+            : 'MULTI-DISCIPLINARY DESIGNER';
+          // Key changes force TextScramble to remount → re-fires animation
+          const nameKey = activeKey ?? 'default';
+          return (
+            <div style={{ flexShrink: 0 }}>
+              <div className="subtitle-overlay" style={{
+                fontFamily: 'Inter, "Helvetica Neue", Helvetica, Arial, sans-serif',
+                fontWeight: 400,
+                fontSize: 'clamp(14px, 1.2vw, 22px)',
+                letterSpacing: '0em',
+                textTransform: 'uppercase',
+                marginBottom: 'clamp(8px, 1.2vh, 16px)',
+              }}>
+                <TextScramble
+                  key={`subtitle-${nameKey}`}
+                  trigger={homepageRevealed}
+                  duration={0.6}
+                  speed={0.03}
+                >
+                  {subtitle}
+                </TextScramble>
+              </div>
+              <div className="home-name-text" style={{
+                fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif',
+                fontWeight: 900,
+                fontSize: 'clamp(63px, 9.75vh, 135px)',
+                lineHeight: 0.88,
+                letterSpacing: '-0.05em',
+              }}>
+                <TextScramble
+                  key={`name1-${nameKey}`}
+                  trigger={homepageRevealed}
+                  duration={0.9}
+                  speed={0.045}
+                  as="span"
+                >
+                  {line1}
+                </TextScramble>
+                {line2 && (
+                  <>
+                    <br />
+                    <TextScramble
+                      key={`name2-${nameKey}`}
+                      trigger={homepageRevealed}
+                      duration={0.9}
+                      speed={0.045}
+                      as="span"
+                    >
+                      {line2}
+                    </TextScramble>
+                  </>
+                )}
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Center: Scroll arrow indicator (replaces WORK pill) */}
         <div
@@ -2052,15 +2077,15 @@ export default function DataTree() {
           <div className="scroll-dash" style={{
             width: 24,
             height: 2,
-            background: '#0A0A0A',
+            background: '#FFFFFF',
             borderRadius: 1,
             transition: 'background 0.5s ease',
           }} />
           {/* Double chevron arrow */}
           <div className="pill-arrow" style={{ pointerEvents: 'none' }}>
             <svg width="16" height="24" viewBox="0 0 16 24" fill="none" style={{ animation: 'arrowNudge 3s ease-out infinite' }}>
-              <path d="M2 2L8 9L14 2" stroke="#0A0A0A" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-              <path d="M2 12L8 19L14 12" stroke="#0A0A0A" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+              <path d="M2 2L8 9L14 2" stroke="#FFFFFF" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+              <path d="M2 12L8 19L14 12" stroke="#FFFFFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" fill="none" />
             </svg>
           </div>
         </div>
@@ -2079,8 +2104,8 @@ export default function DataTree() {
             fontWeight: 400,
             fontSize: 'clamp(14px, 1.32vw, 19px)',
             lineHeight: 2.0,
-            color: '#FFFFFF',
-            background: '#0A0A0A',
+            color: '#000000',
+            background: '#FFFFFF',
             padding: '4px 10px',
             borderRadius: 4,
             WebkitBoxDecorationBreak: 'clone' as any,
@@ -2105,7 +2130,7 @@ export default function DataTree() {
           transform: 'translateX(-50%)',
           width: 1,
           height: 'clamp(8px, 1.3vh, 14px)',
-          background: '#0A0A0A',
+          background: '#FFFFFF',
           zIndex: 4,
           opacity: 0.5,
           transition: 'background 0.5s ease',
@@ -2217,8 +2242,8 @@ export default function DataTree() {
         ].map((z, i) => (
           <div
             key={i}
-            onMouseEnter={() => showWatermark(z.word, z.colorKey)}
-            onMouseLeave={() => hideWatermark()}
+            onMouseEnter={() => { showWatermark(z.word, z.colorKey); setHoveredZoneKey(z.colorKey); }}
+            onMouseLeave={() => { hideWatermark(); setHoveredZoneKey(null); }}
             style={{
               position: 'absolute',
               top: z.top,
@@ -2237,7 +2262,7 @@ export default function DataTree() {
       <WorkPage
         ref={workPageRef}
         visible={workVisible}
-        isDarkMode={isDarkMode}
+        isDarkMode={true}
         onHoverZone={(key) => showWatermark(key, key)}
         onLeaveZone={() => hideWatermark()}
         onHomePill={() => {
@@ -2251,14 +2276,10 @@ export default function DataTree() {
           cs.strength = 0;
           cs.activeZone = null;
           cs.zoneType = null;
-          // Clear tint + glow (dark mode: reset to white tint at 1.0)
+          // Reset to white particles on black background
           if (particleMatRef.current) {
-            if (isDarkModeRef.current) {
-              particleMatRef.current.uniforms.uTintColor.value.set(1, 1, 1);
-              particleMatRef.current.uniforms.uTintStrength.value = 1;
-            } else {
-              particleMatRef.current.uniforms.uTintStrength.value = 0;
-            }
+            particleMatRef.current.uniforms.uTintColor.value.set(1, 1, 1);
+            particleMatRef.current.uniforms.uTintStrength.value = 1;
           }
           if (treeCanvasRef.current) {
             treeCanvasRef.current.style.filter = 'none';
@@ -2275,7 +2296,32 @@ export default function DataTree() {
           window.scrollTo(0, 0);
         }}
         onPillHover={(c) => { hoveredCardRef.current = c; setHoveredCompany(c); }}
+        onCardClick={handleCardClick}
         cardRects={cardPositions}
+      />
+
+      {/* Brand-color wipe — sweeps bottom→top on card enter/exit, covers particle animation */}
+      {wipeActive && (
+        <div
+          key={wipeKey}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 22,
+            background: wipeColor,
+            animation: 'brandWipeThrough 680ms cubic-bezier(0.76, 0, 0.24, 1) forwards',
+            willChange: 'transform, filter',
+            pointerEvents: 'none',
+          }}
+        />
+      )}
+
+      {/* Project detail page — overlays everything when a card is clicked */}
+      <ProjectDetailPage
+        company={detailCompany ?? ''}
+        visible={detailVisible}
+        brandColor={detailBrandColor}
+        onBack={handleDetailBack}
       />
     </div>
   );

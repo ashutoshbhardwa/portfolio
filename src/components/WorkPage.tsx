@@ -122,12 +122,13 @@ interface WorkPageProps {
   onLeaveZone: () => void;
   onHomePill: () => void;
   onPillHover?: (company: string | null) => void;
+  onCardClick?: (company: string) => void;
   cardRects?: CardRect[];
   isDarkMode?: boolean;
 }
 
 const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
-  { visible, onHoverZone, onLeaveZone, onHomePill, onPillHover, cardRects = [], isDarkMode = false }, ref
+  { visible, onHoverZone, onLeaveZone, onHomePill, onPillHover, onCardClick, cardRects = [], isDarkMode = false }, ref
 ) {
   const [mode, setMode] = useState<'exp' | 'skill'>('exp');
   const [hovered, setHovered] = useState<string | null>(null);
@@ -142,6 +143,7 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
 
   const [lockedPill, setLockedPill] = useState<string | null>(null);
   const pills = mode === 'exp' ? EXP_PILLS : SKILL_PILLS;
+  const ALL_PILLS = [...EXP_PILLS, ...SKILL_PILLS];
 
   // Work page is ALWAYS dark — black bg, white text, white particles
   // Dark/light mode only affects the home page; work page stays dark regardless
@@ -170,6 +172,13 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
     }
   }, []);
 
+  // Marker state — declared early so deactivatePill/activatePill can reference setMarkerX
+  const [markerX, setMarkerX] = useState<number | null>(null);
+  // Display year — always visible, tracks cursor nearest pill or defaults to first pill
+  const [displayYear, setDisplayYear] = useState<number | null>(EXP_PILLS[0]?.year ?? null);
+  // Default markerX anchor (first pill center) — set after DOM mounts
+  const defaultMarkerXRef = useRef<number | null>(null);
+
   const deactivatePill = useCallback(() => {
     setHovered(null);
     setLockedPill(null);
@@ -178,6 +187,9 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
     onLeaveZone();
     onPillHover?.(null);
     clearAutoTimer();
+    // Reset marker to first pill (left anchor)
+    if (defaultMarkerXRef.current !== null) setMarkerX(defaultMarkerXRef.current);
+    setDisplayYear(EXP_PILLS[0]?.year ?? null);
   }, [onLeaveZone, onPillHover, clearAutoTimer]);
 
   const activatePill = useCallback((pill: { key: string; desc: string }) => {
@@ -186,6 +198,10 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
     setDescKey(pill.key);
     onHoverZone(pill.key);
     onPillHover?.(pill.key);
+
+    // Sync display year to this pill
+    const foundYear = [...EXP_PILLS, ...SKILL_PILLS].find(p => p.key === pill.key)?.year;
+    if (foundYear !== undefined) setDisplayYear(foundYear);
 
     // Start auto-disintegrate timer
     clearAutoTimer();
@@ -209,8 +225,8 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
 
   const handlePillClick = (pill: { key: string; desc: string }) => {
     if (lockedPill === pill.key) {
-      // Unlock — deactivate
-      deactivatePill();
+      // Already locked — navigate to detail page
+      onCardClick?.(pill.key);
     } else {
       // Lock this pill
       setLockedPill(pill.key);
@@ -225,26 +241,60 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
 
   // Pill refs to track positions for marker
   const pillRowRef = useRef<HTMLDivElement>(null);
-  const [markerX, setMarkerX] = useState<number | null>(null);
 
-  // Update marker position when pill changes
+  // Snap markerX to locked pill center — when not locked, cursor tracking handles it
   useEffect(() => {
-    if (activePillIndex < 0 || !pillRowRef.current) {
-      setMarkerX(null);
-      return;
-    }
+    if (!lockedPill) return;
+    if (activePillIndex < 0 || !pillRowRef.current) { setMarkerX(null); return; }
     const pillRow = pillRowRef.current;
     const pillEls = pillRow.children;
     if (activePillIndex < pillEls.length) {
       const pillEl = pillEls[activePillIndex] as HTMLElement;
-      // Get center of pill relative to pill row container
       const pillRect = pillEl.getBoundingClientRect();
       const rowRect = pillRow.getBoundingClientRect();
       setMarkerX(pillRect.left - rowRect.left + pillRect.width / 2);
     }
-  }, [activePillIndex, mode]);
+  }, [activePillIndex, lockedPill, mode]);
+
+  // Initialize markerX to first pill center once DOM is visible
+  useEffect(() => {
+    if (!visible) return;
+    const raf = requestAnimationFrame(() => {
+      const pillRow = pillRowRef.current;
+      if (!pillRow || pillRow.children.length === 0) return;
+      const firstPill = pillRow.children[0] as HTMLElement;
+      const pillRect = firstPill.getBoundingClientRect();
+      const rowRect = pillRow.getBoundingClientRect();
+      const center = pillRect.left - rowRect.left + pillRect.width / 2;
+      defaultMarkerXRef.current = center;
+      setMarkerX(prev => prev === null ? center : prev);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [visible]);
 
   if (!visible) return null;
+
+  // Two-layer drain:
+  //  1. tetrisBase  — rich gradient opacity 0→1, ensures full dark coverage at end
+  //  2. tetrisDrain — wipe overlay translateX(100%→0%), soft transparent leading edge sweeps right→left
+  //  3. tetrisTextColor — text black→white, sits on top of both layers (zIndex 3)
+  const drainKeyframes = `
+    @keyframes tetrisBase {
+      from { opacity: 0; }
+      to   { opacity: 1; }
+    }
+    @keyframes tetrisDrain {
+      from { transform: translateX(100%); }
+      to   { transform: translateX(0%);   }
+    }
+    @keyframes tetrisTextColor {
+      0%   { color: #000000; }
+      40%  { color: #111111; }
+      65%  { color: #666666; }
+      82%  { color: #c0c0c0; }
+      100% { color: #ffffff; }
+    }
+  `;
 
   const W = typeof window !== 'undefined' ? window.innerWidth : 1440;
   const H = typeof window !== 'undefined' ? window.innerHeight : 900;
@@ -261,13 +311,56 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
   // Pills + timeline span from leftX to W - rightX (full width minus margins)
   const pillAreaW = W - leftX - rightX;
 
+  // ── Slider zone: full-area mousemove activates nearest pill + tracks red line ──
+  const handleSliderMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    // Zone: from timeline bottom (~46*sy from screen bottom) to header bottom (~155*sy)
+    const cursorYFromBottom = H - e.clientY;
+    if (cursorYFromBottom < 40 * sy || cursorYFromBottom > 165 * sy) return;
+    // X range: pill area
+    if (e.clientX < leftX || e.clientX > W - rightX) return;
+
+    const pillRowEl = pillRowRef.current;
+    if (!pillRowEl) return;
+
+    // Find nearest pill by cursor X
+    const pillEls = pillRowEl.children;
+    let nearestIdx = 0;
+    let nearestDist = Infinity;
+    for (let i = 0; i < pillEls.length; i++) {
+      const pr = (pillEls[i] as HTMLElement).getBoundingClientRect();
+      const center = pr.left + pr.width / 2;
+      const dist = Math.abs(e.clientX - center);
+      if (dist < nearestDist) { nearestDist = dist; nearestIdx = i; }
+    }
+    const nearestPill = pills[nearestIdx];
+    if (!nearestPill) return;
+
+    // Activate nearest pill if not already active
+    if (nearestPill.key !== hovered) activatePill(nearestPill);
+
+    // Track markerX directly to cursor (only when not locked — locked snaps to center via useEffect)
+    if (!lockedPill) {
+      const rowRect = pillRowEl.getBoundingClientRect();
+      setMarkerX(e.clientX - rowRect.left);
+    }
+  };
+
+  const handleSliderMouseLeave = () => {
+    if (!lockedPill) deactivatePill();
+  };
+
   return (
-    <div ref={ref} style={{
-      position: 'absolute', inset: 0, zIndex: 6,
-      opacity: visible ? 1 : 0,
-      transition: 'opacity 0.6s ease',
-      pointerEvents: 'auto',
-    }}>
+    <div
+      ref={ref}
+      onMouseMove={handleSliderMouseMove}
+      onMouseLeave={handleSliderMouseLeave}
+      style={{
+        position: 'absolute', inset: 0, zIndex: 6,
+        opacity: visible ? 1 : 0,
+        transition: 'opacity 0.6s ease',
+        pointerEvents: 'auto',
+      }}>
+      <style>{drainKeyframes}</style>
 
       {/* ═══════════ BOTTOM BAR (bottom ~22%) ═══════════ */}
 
@@ -282,10 +375,11 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
         zIndex: 9,
       }} />
 
-      {/* ── Row 1: WORK title (left) + Description (right) — pushed up high ── */}
+
+      {/* ── Row 1: WORK + toggle inline (left) + Description (right) ── */}
       <div style={{
         position: 'absolute',
-        bottom: 190 * sy,
+        bottom: 155 * sy,
         left: leftX,
         right: rightX,
         display: 'flex',
@@ -293,18 +387,78 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
         alignItems: 'flex-end',
         zIndex: 10,
       }}>
-        {/* WORK — large, fills the negative space */}
-        <div style={{
-          fontFamily: 'Inter, "Helvetica Neue", sans-serif',
-          fontWeight: 700,
-          fontSize: 90 * s,
-          lineHeight: 0.9,
-          color: wpFg,
-          letterSpacing: -2,
-        }}>
-          <TextScramble trigger={scrambleTrigger} duration={1.0} speed={0.04} as="div">
-            WORK
-          </TextScramble>
+        {/* Left: WORK + toggle side by side, both bottom-aligned */}
+        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-end', gap: 18 * s }}>
+          {/* WORK — large headline */}
+          <div style={{
+            fontFamily: 'Inter, "Helvetica Neue", sans-serif',
+            fontWeight: 700,
+            fontSize: 90 * s,
+            lineHeight: 0.9,
+            color: wpFg,
+            letterSpacing: -2,
+          }}>
+            <TextScramble trigger={scrambleTrigger} duration={1.0} speed={0.04} as="div">
+              WORK
+            </TextScramble>
+          </div>
+
+          {/* EXP/SKILL toggle — inline with WORK, aligned to baseline */}
+          <div style={{
+            display: 'flex',
+            flexDirection: 'row',
+            borderRadius: 14 * s,
+            overflow: 'hidden',
+            background: wpToggleBg,
+            width: 'fit-content',
+            pointerEvents: 'auto',
+            marginBottom: 6 * s,
+          }}>
+            <div
+              onClick={() => { setMode('exp'); deactivatePill(); }}
+              style={{
+                height: 38 * s,
+                paddingLeft: 18 * s,
+                paddingRight: 18 * s,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                background: mode === 'exp' ? wpToggleActiveBg : wpToggleInactiveBg,
+                color: mode === 'exp' ? wpToggleActiveText : wpToggleInactiveText,
+                borderRadius: 14 * s,
+                fontFamily: 'Inter, "Helvetica Neue", sans-serif',
+                fontWeight: 600,
+                fontSize: 10 * s,
+                letterSpacing: '0.06em',
+                cursor: 'pointer',
+                transition: 'all 0.3s ease',
+              }}
+            >
+              EXPERIENCE
+            </div>
+            <div
+              onClick={() => { setMode('skill'); deactivatePill(); }}
+              style={{
+                height: 38 * s,
+                paddingLeft: 18 * s,
+                paddingRight: 18 * s,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                background: mode === 'skill' ? wpToggleActiveBg : wpToggleInactiveBg,
+                color: mode === 'skill' ? wpToggleActiveText : wpToggleInactiveText,
+                borderRadius: 14 * s,
+                fontFamily: 'Inter, "Helvetica Neue", sans-serif',
+                fontWeight: 600,
+                fontSize: 10 * s,
+                letterSpacing: '0.06em',
+                cursor: 'pointer',
+                transition: 'all 0.3s ease',
+              }}
+            >
+              SKILLS
+            </div>
+          </div>
         </div>
 
         {/* Description — inline code-style highlight per line */}
@@ -348,23 +502,38 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
         right: rightX,
         zIndex: 10,
       }}>
-        {/* Year indicator — tracks pill center */}
-        {activeYear !== null && markerX !== null && (
+        {/* Year indicator — always visible, tracks cursor or defaults to first pill */}
+        {markerX !== null && (
           <div style={{
             position: 'absolute',
-            top: -26 * sy,
-            left: markerX - 18 * s,
-            transition: 'left 0.4s cubic-bezier(0.22, 1, 0.36, 1)',
-            zIndex: 5,
+            top: -48 * sy,
+            left: markerX,
+            transform: 'translateX(-50%)',
+            transition: 'left 0.18s cubic-bezier(0.22, 1, 0.36, 1)',
+            zIndex: 20,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: 2,
+            pointerEvents: 'none',
           }}>
             <span style={{
               fontFamily: 'Inter, "Helvetica Neue", sans-serif',
-              fontWeight: 500,
+              fontWeight: 700,
               fontSize: 15 * s,
-              color: '#FF0000',
+              color: '#FF2222',
+              lineHeight: 1,
+              letterSpacing: '0.02em',
+              textShadow: '0 0 12px rgba(255,34,34,0.6)',
             }}>
-              {activeYear}
+              {displayYear}
             </span>
+            <span style={{
+              fontSize: 9 * s,
+              color: '#FF2222',
+              lineHeight: 1,
+              opacity: 0.9,
+            }}>▼</span>
           </div>
         )}
 
@@ -384,8 +553,6 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
             return (
               <div
                 key={pill.key}
-                onMouseEnter={() => handleEnter(pill)}
-                onMouseLeave={handleLeave}
                 style={{
                   flex: 1,
                   display: 'flex',
@@ -418,7 +585,11 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
                       }}
                       onClick={(e) => {
                         e.stopPropagation();
-                        handlePillClick(pill);
+                        if (isLocked) {
+                          onCardClick?.(pill.key);
+                        } else {
+                          handlePillClick(pill);
+                        }
                       }}
                       style={{
                         height: '100%',
@@ -439,17 +610,9 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
                         whiteSpace: 'nowrap',
                       }}
                     >
-                      {/* Lock icon with wobble on hover (unlocked) */}
                       <motion.div
-                        animate={!isLocked ? {
-                          x: [0, -1.5, 1.5, -1, 1, 0],
-                        } : {}}
-                        transition={!isLocked ? {
-                          duration: 0.4,
-                          repeat: Infinity,
-                          repeatDelay: 2,
-                          ease: 'easeInOut',
-                        } : {}}
+                        animate={!isLocked ? { x: [0, -1.5, 1.5, -1, 1, 0] } : {}}
+                        transition={!isLocked ? { duration: 0.4, repeat: Infinity, repeatDelay: 2, ease: 'easeInOut' } : {}}
                         style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}
                       >
                         <svg width={13 * s} height={13 * s} viewBox="0 0 16 16" fill="none">
@@ -458,14 +621,13 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
                           {isLocked && <circle cx="8" cy="10.5" r="1" fill="currentColor" />}
                         </svg>
                       </motion.div>
-                      {/* Lock pill text */}
                       <motion.span
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
                         transition={{ delay: 0.1, duration: 0.15 }}
                       >
-                        {isLocked ? 'RELEASE' : 'HOLD'}
+                        {isLocked ? 'VIEW' : 'HOLD'}
                       </motion.span>
                     </motion.div>
                   )}
@@ -486,17 +648,62 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
                     alignItems: 'center',
                     justifyContent: 'center',
                     cursor: 'pointer',
+                    position: 'relative',
+                    overflow: 'hidden',
                     fontFamily: 'Inter, "Helvetica Neue", sans-serif',
                     fontWeight: 500,
                     fontSize: 13 * s,
                     whiteSpace: 'nowrap',
-                    overflow: 'hidden',
                     transition: 'background 0.3s ease, color 0.3s ease',
                   }}
                 >
-                  <PillButton>
-                    {pill.label}
-                  </PillButton>
+                  {/* Text — floats above both drain layers, transitions black→white */}
+                  <div style={{
+                    position: 'relative',
+                    zIndex: 3,
+                    ...(isActive && !isLocked ? {
+                      animation: `tetrisTextColor ${AUTO_DISINTEGRATE_MS}ms linear forwards`,
+                    } : {}),
+                  }}>
+                    <PillButton>
+                      {pill.label}
+                    </PillButton>
+                  </div>
+
+                  {/* Layer 1 (base): rich diagonal gradient, fades opacity 0→1.
+                      Guarantees full dark coverage at end regardless of wipe position. */}
+                  {isActive && !isLocked && (
+                    <div
+                      key={`${hovered}-b`}
+                      style={{
+                        position: 'absolute',
+                        top: 0, left: 0, width: '100%', height: '100%',
+                        zIndex: 1,
+                        opacity: 0,
+                        background: 'linear-gradient(135deg, #1e1e1e 0%, #272727 35%, #333 65%, #2a2a2a 100%)',
+                        animation: `tetrisBase ${AUTO_DISINTEGRATE_MS}ms linear forwards`,
+                        pointerEvents: 'none',
+                      }}
+                    />
+                  )}
+
+                  {/* Layer 2 (wipe): soft-edge gradient sweeps right→left.
+                      Transparent leading edge (0–38%) reveals the base layer below,
+                      creating a rich dark wave that wipes across the pill. */}
+                  {isActive && !isLocked && (
+                    <div
+                      key={`${hovered}-w`}
+                      style={{
+                        position: 'absolute',
+                        top: 0, left: 0, width: '100%', height: '100%',
+                        zIndex: 2,
+                        background: 'linear-gradient(to right, transparent 0%, transparent 38%, rgba(42,42,42,0.45) 52%, rgba(40,40,40,0.88) 64%, #333 72%, #2d2d2d 100%)',
+                        transform: 'translateX(100%)',
+                        animation: `tetrisDrain ${AUTO_DISINTEGRATE_MS}ms linear forwards`,
+                        pointerEvents: 'none',
+                      }}
+                    />
+                  )}
                 </motion.div>
               </div>
             );
@@ -520,96 +727,42 @@ const WorkPage = forwardRef<HTMLDivElement, WorkPageProps>(function WorkPage(
                 justifyContent: 'center',
               }}>
                 <div style={{
-                  width: 0.5,
-                  height: isMajor ? 24 * sy : 12 * sy,
-                  background: isDarkMode ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.15)',
+                  width: isMajor ? 1.5 : 1,
+                  height: isMajor ? 24 * sy : 14 * sy,
+                  background: isMajor ? 'rgba(255,255,255,0.45)' : 'rgba(255,255,255,0.18)',
                 }} />
               </div>
             );
           })}
         </div>
 
-        {/* Red vertical line from year through pills to timeline */}
-        {activeYear !== null && markerX !== null && (
+        {/* Red vertical line — runs from year label through pills down to ticks */}
+        {markerX !== null && (
           <div style={{
             position: 'absolute',
-            top: -4 * sy,
+            top: -48 * sy,
             left: markerX,
             width: 1,
-            height: `calc(100% + ${4 * sy}px)`,
-            background: '#FF0000',
-            transition: 'left 0.4s cubic-bezier(0.22, 1, 0.36, 1)',
+            height: `calc(100% + ${48 * sy}px)`,
+            background: 'linear-gradient(to bottom, rgba(255,34,34,0) 0%, rgba(255,34,34,0.9) 12%, rgba(255,34,34,0.9) 88%, rgba(255,34,34,0.3) 100%)',
+            transition: 'left 0.18s cubic-bezier(0.22, 1, 0.36, 1)',
             zIndex: 5,
+            pointerEvents: 'none',
           }} />
         )}
       </div>
 
-      {/* ── Row 3: EXP/SKILL toggle (left) + HOME pill (right) ── */}
+      {/* ── Row 3: HOME pill only (right-aligned) ── */}
       <div style={{
         position: 'absolute',
         bottom: 22 * sy,
         left: leftX,
         right: rightX,
         display: 'flex',
-        justifyContent: 'space-between',
+        justifyContent: 'flex-end',
         alignItems: 'center',
         zIndex: 11,
       }}>
-        {/* EXP/SKILL toggle */}
-        <div style={{
-          display: 'flex',
-          flexDirection: 'row',
-          borderRadius: 12 * s,
-          overflow: 'hidden',
-          background: wpToggleBg,
-          width: 'fit-content',
-        }}>
-          <div
-            onClick={() => { setMode('exp'); deactivatePill(); }}
-            style={{
-              height: 34 * s,
-              paddingLeft: 14 * s,
-              paddingRight: 14 * s,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              background: mode === 'exp' ? wpToggleActiveBg : wpToggleInactiveBg,
-              color: mode === 'exp' ? wpToggleActiveText : wpToggleInactiveText,
-              borderRadius: 12 * s,
-              fontFamily: 'Inter, "Helvetica Neue", sans-serif',
-              fontWeight: 500,
-              fontSize: 8.9 * s,
-              cursor: 'pointer',
-              transition: 'all 0.3s ease',
-              pointerEvents: 'auto',
-            }}
-          >
-            EXPERIENCE
-          </div>
-          <div
-            onClick={() => { setMode('skill'); deactivatePill(); }}
-            style={{
-              height: 34 * s,
-              paddingLeft: 14 * s,
-              paddingRight: 14 * s,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              background: mode === 'skill' ? wpToggleActiveBg : wpToggleInactiveBg,
-              color: mode === 'skill' ? wpToggleActiveText : wpToggleInactiveText,
-              borderRadius: 12 * s,
-              fontFamily: 'Inter, "Helvetica Neue", sans-serif',
-              fontWeight: 500,
-              fontSize: 8.9 * s,
-              cursor: 'pointer',
-              transition: 'all 0.3s ease',
-              pointerEvents: 'auto',
-            }}
-          >
-            SKILL
-          </div>
-        </div>
-
         {/* HOME pill */}
         <div onClick={onHomePill} style={{
           cursor: 'pointer',

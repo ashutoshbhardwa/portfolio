@@ -93,9 +93,13 @@ export function buildParticleSystem(
     worldPos[i * 3 + 1] = pt[1];
     worldPos[i * 3 + 2] = pt[2];
 
-    // Scatter position
-    const sx = Math.random() * W;
-    const sy = Math.random() * H;
+    // Scatter position — Gaussian distribution centered on screen.
+    // Creates a soft nebula cluster rather than uniform noise:
+    // particles concentrate in the center-to-lower area with natural falloff toward edges.
+    const gx1 = Math.sqrt(-2 * Math.log(Math.random() + 1e-9)) * Math.cos(2 * Math.PI * Math.random());
+    const gy1 = Math.sqrt(-2 * Math.log(Math.random() + 1e-9)) * Math.cos(2 * Math.PI * Math.random());
+    const sx = W * 0.5  + gx1 * W * 0.28; // σ = 28% of width  → most within central 56%
+    const sy = H * 0.42 + gy1 * H * 0.22; // σ = 22% of height → centered at 42% from top
     scatterPos[i * 2] = sx;
     scatterPos[i * 2 + 1] = sy;
 
@@ -265,8 +269,8 @@ void main() {
   float ryFinal = ry_t * 1.15;
 
   // Right-aligned, base at ~85% down
-  float tx = rx * d + uResolution.x * 0.58;
-  float ty = -ryFinal * d + uResolution.y * 0.85;
+  float tx = rx * d + uResolution.x * 0.72;
+  float ty = -ryFinal * d + uResolution.y * 0.65;
 
   // Scatter position with brownian drift
   vec2 scatter = aScatterPos + aBrownian;
