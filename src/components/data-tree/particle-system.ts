@@ -54,6 +54,8 @@ export interface ParticleBuffers {
   opacityBuf: Float32Array;
   /** Static: per-particle scatter positions (rebuilt on resize) */
   scatterBuf: Float32Array;
+  /** Dynamic: logo target positions (updated when company changes) */
+  logoPosBuf: Float32Array;
   count: number;
 }
 
@@ -93,13 +95,10 @@ export function buildParticleSystem(
     worldPos[i * 3 + 1] = pt[1];
     worldPos[i * 3 + 2] = pt[2];
 
-    // Scatter position — Gaussian distribution centered on screen.
-    // Creates a soft nebula cluster rather than uniform noise:
-    // particles concentrate in the center-to-lower area with natural falloff toward edges.
-    const gx1 = Math.sqrt(-2 * Math.log(Math.random() + 1e-9)) * Math.cos(2 * Math.PI * Math.random());
-    const gy1 = Math.sqrt(-2 * Math.log(Math.random() + 1e-9)) * Math.cos(2 * Math.PI * Math.random());
-    const sx = W * 0.5  + gx1 * W * 0.28; // σ = 28% of width  → most within central 56%
-    const sy = H * 0.42 + gy1 * H * 0.22; // σ = 22% of height → centered at 42% from top
+    // Scatter position — uniform random across full viewport.
+    // Ensures particles fill the entire screen when disintegrated (photo wall).
+    const sx = Math.random() * W;
+    const sy = Math.random() * H;
     scatterPos[i * 2] = sx;
     scatterPos[i * 2 + 1] = sy;
 
@@ -155,6 +154,14 @@ export function buildParticleSystem(
   geometry.setAttribute("aWindPhase", new THREE.BufferAttribute(windPhase, 2));
   geometry.setAttribute("aFontSize", new THREE.BufferAttribute(fontSizeBuf, 1));
 
+  // Logo target positions — dynamic, updated when company changes
+  const logoPosBuf = new Float32Array(n * 2);
+  // Default: same as scatter (no logo)
+  for (let i = 0; i < n * 2; i++) logoPosBuf[i] = scatterPos[i];
+  const logoPosAttr = new THREE.BufferAttribute(logoPosBuf, 2);
+  logoPosAttr.setUsage(THREE.DynamicDrawUsage);
+  geometry.setAttribute("aLogoPos", logoPosAttr);
+
   // Dynamic
   const brownianAttr = new THREE.BufferAttribute(brownianBuf, 2);
   brownianAttr.setUsage(THREE.DynamicDrawUsage);
@@ -180,6 +187,7 @@ export function buildParticleSystem(
     digitBuf,
     opacityBuf,
     scatterBuf: scatterPos,
+    logoPosBuf,
     count: n,
   };
 }
@@ -207,6 +215,7 @@ precision highp float;
 
 // "position" is auto-declared by Three.js from geometry.setAttribute("position", ...)
 attribute vec2 aScatterPos;
+attribute vec2 aLogoPos;
 attribute float aDarkness;
 attribute float aDelay;
 attribute float aWindFreq;
@@ -227,6 +236,7 @@ uniform float uDPR;
 uniform float uUniformScale;
 uniform float uDensityScale;
 uniform float uDisintegration;
+uniform float uLogoFormation; // 0 = scatter/tree, 1 = logo shape
 
 varying float vDigitIndex;
 varying float vAlpha;
@@ -305,12 +315,15 @@ void main() {
   // Spring displacement
   pos += aDisplacement;
 
-  // Disintegration: animate back to scatter positions
+  // Disintegration: animate back to scatter positions (or logo positions)
   float disintEase = 0.0;
   if (uDisintegration > 0.0) {
     disintEase = uDisintegration * uDisintegration * (3.0 - 2.0 * uDisintegration);
     vec2 scatterTarget = aScatterPos + aBrownian;
-    pos = mix(pos, scatterTarget, disintEase);
+    // Logo formation: lerp between scatter and logo positions
+    // uLogoFormation smoothly ramps 0→1 when a company pill is hovered
+    vec2 finalTarget = mix(scatterTarget, aLogoPos, uLogoFormation);
+    pos = mix(pos, finalTarget, disintEase);
   }
 
   // Screen-space → clip-space
@@ -318,11 +331,16 @@ void main() {
   ndc.y = -ndc.y;
   gl_Position = vec4(ndc, 0.0, 1.0);
 
-  // Scatter state: all particles small (8px max) regardless of zone
+  // Scatter state: particles sized for full-screen coverage
   // Formed state: normal depth-scaled size
-  float scatterPtSize = 9.0;
+  float scatterPtSize = 8.0;
+  // Logo state: slightly larger so the logo reads clearly
+  float logoPtSize = 6.0;
   float formedPtSize = aFontSize * d * uDensityScale;
-  float ptSize = mix(scatterPtSize, formedPtSize, ep * (1.0 - uDisintegration)) * uDPR;
+  // During disintegration, size depends on whether we're forming a logo
+  float disintTargetSize = mix(scatterPtSize, logoPtSize, uLogoFormation);
+  float disintSize = mix(formedPtSize, disintTargetSize, disintEase);
+  float ptSize = mix(scatterPtSize, ep > 0.01 ? (uDisintegration > 0.0 ? disintSize : formedPtSize) : scatterPtSize, ep) * uDPR;
   gl_PointSize = ptSize;
 
   // Varyings
@@ -337,27 +355,26 @@ void main() {
   float centerDist = length(position.xz); // distance from trunk axis
   float terrainFade = 1.0;
   if (yNorm < 0.25) {
-    // Ground zone: gradual fade from trunk outward
-    float distStart = 0.12; // full opacity near trunk
-    float distEnd = 1.4;    // fully transparent far out
+    float distStart = 0.12;
+    float distEnd = 1.4;
     float distFade = clamp(1.0 - (centerDist - distStart) / (distEnd - distStart), 0.0, 1.0);
-    // Also fade with how low the point is (lower = more fade)
     float yFade = clamp(yNorm / 0.25, 0.3, 1.0);
-    terrainFade = distFade * distFade * yFade; // cubic-ish falloff
+    terrainFade = distFade * distFade * yFade;
   }
-  // Canopy outer edges also soften slightly
   if (yNorm > 0.3) {
     float edgeFade = clamp(1.0 - (centerDist - 0.6) / 0.8, 0.5, 1.0);
     terrainFade *= edgeFade;
   }
 
-  // Scatter: uniform low opacity so field looks like distant stars
-  // No darkness variation in scatter — all equally faint
+  // Alpha
   float scatterOpacity = 0.32;
-  vAlpha = mix(scatterOpacity, depthAlpha * terrainFade, ep);
-  // Disintegration alpha: fade to 22% as particles return to scatter
+  float logoOpacity = 0.55; // brighter when forming logo
+  float formedAlpha = depthAlpha * terrainFade;
+  vAlpha = mix(scatterOpacity, formedAlpha, ep);
   if (uDisintegration > 0.0) {
-    vAlpha *= mix(1.0, 0.22, disintEase);
+    // During disintegration, lerp toward scatter or logo opacity
+    float targetAlpha = mix(scatterOpacity, logoOpacity, uLogoFormation);
+    vAlpha = mix(vAlpha, targetAlpha, disintEase);
   }
   vDarkness = aDarkness;
 }
@@ -434,6 +451,7 @@ export function createParticleMaterial(
       uUniformScale: { value: 1 },
       uDensityScale: { value: 3.0 },
       uDisintegration: { value: 0.0 },
+      uLogoFormation: { value: 0.0 },
       uAtlas: { value: atlas },
       uTintColor: { value: new THREE.Vector3(0, 0, 0) },
       uTintStrength: { value: 0.0 },

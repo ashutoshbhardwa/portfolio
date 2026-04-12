@@ -47,6 +47,62 @@ import {
   type ParticleBuffers,
 } from "./data-tree/particle-system";
 import { preloadCompanyLuminance, getCachedLuminance } from "./data-tree/luminance-sampler";
+import { sampleLogoPositions, clearLogoCache } from "./data-tree/logo-sampler";
+
+// ── Logo SVG URLs per company (served from /public/logos/) ─────────────────
+const LOGO_URLS: Record<string, string> = {
+  DAILYOBJECTS: '/logos/DAILYOBJECTS.svg',
+  CREPDOGCREW: '/logos/CREPDOGCREW.svg',
+  PROBO: '/logos/PROBO.svg',
+  'STABLE MONEY': '/logos/STABLEMONEY.svg',
+  // OTHER: uses glyphs (no SVG), handled separately
+};
+
+// ── Perlin noise for fluid particle flow (work page zero state) ────────────
+// Compact implementation — permutation table + gradient noise
+const _perm = (() => {
+  const p = [151,160,137,91,90,15,131,13,201,95,96,53,194,233,7,225,140,36,103,
+    30,69,142,8,99,37,240,21,10,23,190,6,148,247,120,234,75,0,26,197,62,94,252,
+    219,203,117,35,11,32,57,177,33,88,237,149,56,87,174,20,125,136,171,168,68,
+    175,74,165,71,134,139,48,27,166,77,146,158,231,83,111,229,122,60,211,133,230,
+    220,105,92,41,55,46,245,40,244,102,143,54,65,25,63,161,1,216,80,73,209,76,
+    132,187,208,89,18,169,200,196,135,130,116,188,159,86,164,100,109,198,173,186,
+    3,64,52,217,226,250,124,123,5,202,38,147,118,126,255,82,85,212,207,206,59,
+    227,47,16,58,17,182,189,28,42,223,183,170,213,119,248,152,2,44,154,163,70,
+    221,153,101,155,167,43,172,9,129,22,39,253,19,98,108,110,79,113,224,232,178,
+    185,112,104,218,246,97,228,251,34,242,193,238,210,144,12,191,179,162,241,81,
+    51,145,235,249,14,239,107,49,192,214,31,181,199,106,157,184,84,204,176,115,
+    121,50,45,127,4,150,254,138,236,205,93,222,114,67,29,24,72,243,141,128,195,
+    78,66,215,61,156,180];
+  const out = new Uint8Array(512);
+  for (let i = 0; i < 256; i++) { out[i] = p[i]; out[256 + i] = p[i]; }
+  return out;
+})();
+
+function _fade(t: number) { return t * t * t * (t * (t * 6 - 15) + 10); }
+function _lerp(t: number, a: number, b: number) { return a + t * (b - a); }
+function _grad(hash: number, x: number, y: number, z: number) {
+  const h = hash & 15;
+  const u = h < 8 ? x : y;
+  const v = h < 4 ? y : (h === 12 || h === 14) ? x : z;
+  return ((h & 1) === 0 ? u : -u) + ((h & 2) === 0 ? v : -v);
+}
+
+/** 3D Perlin noise, returns value in roughly [-1, 1] */
+function noise3(x: number, y: number, z: number): number {
+  const X = Math.floor(x) & 255, Y = Math.floor(y) & 255, Z = Math.floor(z) & 255;
+  x -= Math.floor(x); y -= Math.floor(y); z -= Math.floor(z);
+  const u = _fade(x), v = _fade(y), w = _fade(z);
+  const A = _perm[X] + Y, AA = _perm[A] + Z, AB = _perm[A + 1] + Z;
+  const B = _perm[X + 1] + Y, BA = _perm[B] + Z, BB = _perm[B + 1] + Z;
+  return _lerp(w,
+    _lerp(v,
+      _lerp(u, _grad(_perm[AA], x, y, z), _grad(_perm[BA], x - 1, y, z)),
+      _lerp(u, _grad(_perm[AB], x, y - 1, z), _grad(_perm[BB], x - 1, y - 1, z))),
+    _lerp(v,
+      _lerp(u, _grad(_perm[AA + 1], x, y, z - 1), _grad(_perm[BA + 1], x - 1, y, z - 1)),
+      _lerp(u, _grad(_perm[AB + 1], x, y - 1, z - 1), _grad(_perm[BB + 1], x - 1, y - 1, z - 1))));
+}
 
 // ── PillButton ──────────────────────────────────────────────────────────────
 
@@ -313,6 +369,14 @@ export default function DataTree() {
   const savedFontSizesRef = useRef<Float32Array | null>(null);
   const savedOpacityRef = useRef<Float32Array | null>(null);
   const particleMatRef = useRef<THREE.ShaderMaterial | null>(null);
+
+  // Logo formation state
+  const logoFormationRef = useRef(0); // 0→1 lerp for uLogoFormation uniform
+  const logoCompanyRef = useRef<string | null>(null); // which company's logo is loaded in buffer
+  const logoWantCompanyRef = useRef<string | null>(null); // which company is WANTED (hovered)
+  const logoLoadingRef = useRef(false); // prevents duplicate fetches
+  const logoTransitionPhase = useRef<'idle' | 'scatter-out' | 'form-in'>('idle');
+  const logoPendingCompany = useRef<string | null>(null); // company queued during scatter-out
   const cardPixelWidthRef = useRef(0);
   const cardPixelHeightRef = useRef(0);
   const cardRectsRef = useRef<CardRect[]>([]);
@@ -351,16 +415,17 @@ export default function DataTree() {
   // Card image overlay state (rendered at DataTree level for correct blend mode compositing)
   const [hoveredCompany, setHoveredCompany] = useState<string | null>(null);
   const [cardImagesVisible, setCardImagesVisible] = useState(false);
+  const cardImagesVisibleRef = useRef(false);
   const cardImagesTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Sync hoveredCompany → delayed image visibility
+  // Images only appear once logo formation is well underway (checked in anim loop)
   useEffect(() => {
     if (cardImagesTimerRef.current) clearTimeout(cardImagesTimerRef.current);
-    if (hoveredCompany && COMPANY_PROJECTS[hoveredCompany]) {
-      cardImagesTimerRef.current = setTimeout(() => setCardImagesVisible(true), 350);
-    } else {
+    if (!hoveredCompany || !COMPANY_PROJECTS[hoveredCompany]) {
       setCardImagesVisible(false);
     }
+    // Images will be shown from the animation loop when logoFormationRef > 0.5
     return () => { if (cardImagesTimerRef.current) clearTimeout(cardImagesTimerRef.current); };
   }, [hoveredCompany]);
 
@@ -589,6 +654,8 @@ export default function DataTree() {
       particleMat.uniforms.uResolution.value.set(W, H);
       particleMat.uniforms.uDPR.value = physicalDPR;
       lineMat.uniforms.uResolution.value.set(W, H);
+      clearLogoCache(); // logo positions depend on viewport size
+      logoCompanyRef.current = null; // force re-sample on next hover
 
       // Redistribute scatter positions & recompute card targets
       if (pb) {
@@ -782,7 +849,8 @@ export default function DataTree() {
     };
 
     container.addEventListener("wheel", onWheel, { passive: true });
-    container.addEventListener("pointermove", onPointerMove);
+    // Listen on window so rotation works even when WorkPage overlay captures events
+    window.addEventListener("pointermove", onPointerMove);
     container.addEventListener("pointerleave", onPointerLeave);
     window.addEventListener("blur", onWindowBlur);
 
@@ -853,18 +921,59 @@ export default function DataTree() {
         p.screenX = cx + windX;
         p.screenY = cy + windY;
 
-        // Brownian motion — active in scatter AND disintegration, suppressed in logo/card mode
+        // Brownian / flow field motion
         {
           const disintActive = progress > 0.9;
           const inFormationMode = cardFormingRef.current || cardDisintegratingRef.current;
-          const brownianScale = inFormationMode ? 0 : (p.ep < 0.98 ? 1.0 : disintActive ? 0.15 : 0);
-          if (brownianScale > 0) {
-            p.bvx += (Math.random() - 0.5) * 0.3 * brownianScale;
-            p.bvy += (Math.random() - 0.5) * 0.3 * brownianScale;
-            p.bvx *= 0.92;
-            p.bvy *= 0.92;
+          const onWorkPage = workVisibleRef.current;
+          const logoForming = logoFormationRef.current > 0.1;
+
+          if (onWorkPage && disintActive && !inFormationMode) {
+            // ── Work page: Perlin noise flow field + light jitter ──
+            // Noise is dominant — particles visibly drift in regional currents.
+            // Light jitter keeps them as individual particles, not thread streams.
+
+            // Noise flow — use current actual position for local field sampling
+            const ax = pb.scatterBuf[i * 2] + pb.brownianBuf[i * 2];
+            const ay = pb.scatterBuf[i * 2 + 1] + pb.brownianBuf[i * 2 + 1];
+            const n = noise3(ax * 0.002, ay * 0.002, time * 0.06);
+            const angle = n * Math.PI * 4;
+            const speed = logoForming ? 0.06 : 0.9;
+            const fx = Math.cos(angle) * speed;
+            const fy = Math.sin(angle) * speed;
+
+            // Light jitter for particle individuality
+            const jx = (Math.random() - 0.5) * 0.15;
+            const jy = (Math.random() - 0.5) * 0.15;
+
+            // Fast velocity response — 0.25 blend means particles pick up
+            // the flow direction quickly instead of slowly drifting into it
+            p.bvx = p.bvx * 0.75 + (fx + jx) * 0.25;
+            p.bvy = p.bvy * 0.75 + (fy + jy) * 0.25;
+
             pb.brownianBuf[i * 2] += p.bvx;
             pb.brownianBuf[i * 2 + 1] += p.bvy;
+
+            // Moderate decay — prevents stream buildup while keeping movement visible
+            pb.brownianBuf[i * 2] *= 0.996;
+            pb.brownianBuf[i * 2 + 1] *= 0.996;
+
+            // Soft wrap off-screen
+            if (ax < -50) pb.brownianBuf[i * 2] += W + 100;
+            else if (ax > W + 50) pb.brownianBuf[i * 2] -= W + 100;
+            if (ay < -50) pb.brownianBuf[i * 2 + 1] += H + 100;
+            else if (ay > H + 50) pb.brownianBuf[i * 2 + 1] -= H + 100;
+          } else {
+            // ── Home page / formation: original brownian jitter ──
+            const brownianScale = inFormationMode ? 0 : (p.ep < 0.98 ? 1.0 : disintActive ? 0.15 : 0);
+            if (brownianScale > 0) {
+              p.bvx += (Math.random() - 0.5) * 0.3 * brownianScale;
+              p.bvy += (Math.random() - 0.5) * 0.3 * brownianScale;
+              p.bvx *= 0.92;
+              p.bvy *= 0.92;
+              pb.brownianBuf[i * 2] += p.bvx;
+              pb.brownianBuf[i * 2 + 1] += p.bvy;
+            }
           }
         }
 
@@ -1196,7 +1305,15 @@ export default function DataTree() {
       const bgVal = Math.round(cs.bgInvert * 255);
       const bgColor = `rgb(${bgVal},${bgVal},${bgVal})`;
       container.style.background = bgColor;
-      if (blurRectRef.current) blurRectRef.current.style.background = bgColor;
+      if (blurRectRef.current) {
+        blurRectRef.current.style.background = bgColor;
+        // Hide on work page so it doesn't block the particle photo wall
+        blurRectRef.current.style.opacity = workVisibleRef.current ? '0' : '1';
+      }
+      if (vignetteRef.current) {
+        // Also force-hide vignette on work page
+        if (workVisibleRef.current) vignetteRef.current.style.opacity = '0';
+      }
 
       // WorkPage color sync via CSS variables
       // On work page (black bg), brand color shows on WORK header + pills
@@ -1523,7 +1640,9 @@ export default function DataTree() {
         }
 
         // FORM: start new formation if we want a company and aren't forming/disintegrating
-        if (wantCompany && !cardFormingRef.current && !cardDisintegratingRef.current) {
+        // Skip card formation when logo formation is active (work page with SVG logo)
+        const useLogoInstead = wantCompany && LOGO_URLS[wantCompany] && workVisibleRef.current;
+        if (wantCompany && !useLogoInstead && !cardFormingRef.current && !cardDisintegratingRef.current) {
           const targets = cardTargetsRef.current.get(wantCompany);
           const numCards = Math.min(COMPANY_PROJECTS[wantCompany]?.length ?? 0, 1);
           const cardPtCount = numCards * PARTICLES_PER_CARD;
@@ -1737,10 +1856,111 @@ export default function DataTree() {
       particleMat.uniforms.uRotX.value = cfp > 0 ? rotX * (1 - cfp) : rotX;
       particleMat.uniforms.uTime.value = time;
 
-      const disint = clamp((progress - 0.86) / 0.8, 0, 1);
-      particleMat.uniforms.uDisintegration.value = cfp > 0 ? Math.max(0, disint - disint * cfp) : disint;
+      // Disintegration: full scatter by progress ~1.40 so particles fill entire screen
+      const disint = clamp((progress - 0.86) / 0.5, 0, 1);
+      // On work page: keep disintegration at 1.0 regardless of cfp (logo formation handles visuals)
+      // On home page: cfp reduces disintegration for card formation
+      const onWorkPage = workVisibleRef.current;
+      particleMat.uniforms.uDisintegration.value = onWorkPage ? disint : (cfp > 0 ? Math.max(0, disint - disint * cfp) : disint);
       if (progress >= 1.50) targetProgress = 1.50;
       lineMat.uniforms.uTime.value = time;
+
+      // ── Logo formation with pill-to-pill transitions ────────────────────
+      // State machine: idle → form-in → (pill switch) scatter-out → form-in
+      {
+        const wantCompany = workVisibleRef.current ? hoveredCardRef.current : null;
+        const wantUrl = wantCompany ? LOGO_URLS[wantCompany] : null;
+        const phase = logoTransitionPhase.current;
+        const prevWant = logoWantCompanyRef.current;
+
+        // ── Detect changes ──
+        const companyChanged = wantCompany !== prevWant;
+        logoWantCompanyRef.current = wantCompany;
+
+        if (companyChanged) {
+          if (!wantCompany) {
+            // Pill unhovered → scatter out
+            logoTransitionPhase.current = 'scatter-out';
+            logoPendingCompany.current = null;
+          } else if (logoFormationRef.current > 0.15 && prevWant) {
+            // Pill-to-pill switch while formed → scatter out first, queue new company
+            logoTransitionPhase.current = 'scatter-out';
+            logoPendingCompany.current = wantCompany;
+          } else {
+            // First hover or formation barely started → go straight to form-in
+            logoTransitionPhase.current = 'form-in';
+            logoPendingCompany.current = null;
+          }
+        }
+
+        // ── Phase: scatter-out — speed depends on context ──
+        // Pill-to-pill: fast snap (0.25) so the new logo forms quickly
+        // Pill release to zero: smooth gentle dissolve (0.035) so particles drift naturally
+        if (logoTransitionPhase.current === 'scatter-out') {
+          const isPillToPill = !!logoPendingCompany.current;
+          const scatterSpeed = isPillToPill ? 0.25 : 0.035;
+          logoFormationRef.current += (0 - logoFormationRef.current) * scatterSpeed;
+          if (logoFormationRef.current < 0.02) {
+            logoFormationRef.current = 0;
+            // Scatter complete — check if we have a pending company to form into
+            if (logoPendingCompany.current) {
+              logoTransitionPhase.current = 'form-in';
+              // Reset company ref so the loader triggers
+              logoCompanyRef.current = null;
+            } else {
+              logoTransitionPhase.current = 'idle';
+              logoCompanyRef.current = null;
+            }
+          }
+        }
+
+        // ── Phase: form-in — load logo if needed, then ramp formation up ──
+        if (logoTransitionPhase.current === 'form-in') {
+          const targetCompany = logoPendingCompany.current || wantCompany;
+          const targetUrl = targetCompany ? LOGO_URLS[targetCompany] : null;
+
+          // Load logo positions if not yet loaded for this company
+          if (targetUrl && targetCompany !== logoCompanyRef.current && !logoLoadingRef.current && pb) {
+            logoLoadingRef.current = true;
+            sampleLogoPositions(targetUrl, pb.count, W, H).then((positions) => {
+              if (!pb) return;
+              const logoBuf = pb.logoPosBuf;
+              const logoAttr = pb.geometry.getAttribute('aLogoPos') as THREE.BufferAttribute;
+              for (let i = 0; i < pb.count; i++) {
+                logoBuf[i * 2] = positions[i * 2];
+                logoBuf[i * 2 + 1] = positions[i * 2 + 1];
+              }
+              logoAttr.needsUpdate = true;
+              logoCompanyRef.current = targetCompany;
+              logoLoadingRef.current = false;
+              logoPendingCompany.current = null;
+            }).catch(() => {
+              logoLoadingRef.current = false;
+            });
+          }
+
+          // Ramp up once logo positions are loaded
+          if (logoCompanyRef.current === targetCompany && targetCompany) {
+            logoFormationRef.current += (1.0 - logoFormationRef.current) * 0.045; // smooth form-in
+            if (logoFormationRef.current > 0.998) logoFormationRef.current = 1.0;
+          }
+        }
+
+        // ── Phase: idle — decay to 0 if somehow still > 0 ──
+        if (logoTransitionPhase.current === 'idle' && logoFormationRef.current > 0) {
+          logoFormationRef.current += (0 - logoFormationRef.current) * 0.06;
+          if (logoFormationRef.current < 0.005) logoFormationRef.current = 0;
+        }
+
+        particleMat.uniforms.uLogoFormation.value = logoFormationRef.current;
+
+        // Show card images only after logo is mostly formed (avoids images before logo)
+        const shouldShow = logoFormationRef.current > 0.55 && !!wantCompany && !!COMPANY_PROJECTS[wantCompany];
+        if (shouldShow !== cardImagesVisibleRef.current) {
+          cardImagesVisibleRef.current = shouldShow;
+          setCardImagesVisible(shouldShow);
+        }
+      }
 
       // Particles: transition dark→white as background goes white→black on scroll
       // Uses the same smoothstep as the background transition
@@ -1797,7 +2017,7 @@ export default function DataTree() {
       cancelAnimationFrame(rafId);
       ro.disconnect();
       container.removeEventListener("wheel", onWheel);
-      container.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointermove", onPointerMove);
       container.removeEventListener("pointerleave", onPointerLeave);
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('blur', onWindowBlur);
