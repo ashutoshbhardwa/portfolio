@@ -268,9 +268,9 @@ void main() {
   // Stretch height, use tilted Y
   float ryFinal = ry_t * 1.15;
 
-  // Right-aligned, base at ~85% down
-  float tx = rx * d + uResolution.x * 0.72;
-  float ty = -ryFinal * d + uResolution.y * 0.80;
+  // Centred horizontally, base at ~85% down
+  float tx = rx * d + uResolution.x * 0.50;
+  float ty = -ryFinal * d + uResolution.y * 0.65;
 
   // Scatter position with brownian drift
   vec2 scatter = aScatterPos + aBrownian;
@@ -398,15 +398,17 @@ void main() {
 
   if (glyphAlpha < 0.05) discard;
 
-  // Color: all particles are near-black (#0A0A0A), trunk darkest
-  // Trunk (high darkness) = pure black, canopy = very dark grey
-  float g = (1.0 - vDarkness) * 0.18 + 0.04; // range: 0.04 (black) to 0.22 (very dark grey)
-  vec3 baseColor = vec3(g);
+  // ── Glow mode (additive blending) ───────────────────────────────────────
+  // vDarkness: high = trunk/structural (brightest glow), low = canopy (dim haze)
+  // Brightness range: canopy 0.18 → trunk 0.82
+  float brightness = 0.18 + vDarkness * 0.64;
 
-  // Tint: lerp toward brand color when hovering skill zones
-  // Trunk (high darkness) gets full brand color, canopy gets lighter shade
-  // This preserves depth while clearly showing the brand color
-  vec3 tintedColor = uTintColor * (0.4 + vDarkness * 0.6);
+  // Warm white base — slightly cream so it reads as light, not flat white
+  vec3 baseColor = vec3(brightness * 0.94, brightness * 0.90, brightness * 0.82);
+
+  // Tint: zone color radiates through particles, same strength as text/UI elements.
+  // No cap multiplier — uTintStrength drives both particles and text identically.
+  vec3 tintedColor = uTintColor * brightness * 2.0;
   vec3 color = mix(baseColor, tintedColor, uTintStrength);
 
   gl_FragColor = vec4(color, glyphAlpha * vAlpha * vFadeOpacity);
@@ -439,24 +441,80 @@ export function createParticleMaterial(
     transparent: true,
     depthTest: false,
     depthWrite: false,
-    blending: THREE.NormalBlending,
+    blending: THREE.AdditiveBlending,
   });
 }
 
-// ── Proximity lines material ─────────────────────────────────────────────────
+// ── Branch skeleton lines material ──────────────────────────────────────────
+// Full 3D projection matching the particle shader exactly.
+// Per-vertex delay drives staggered dissolve-in/out identical to particles.
 
 export const LINE_VERTEX_SHADER = /* glsl */ `
 precision highp float;
 
-uniform vec2 uResolution;
+// Projection — mirrors particle vertex shader exactly
+uniform float uProgress;
+uniform float uRotY;
+uniform float uRotX;
+uniform float uSceneScale;
+uniform vec2  uResolution;
+uniform float uDisintegration;
+uniform float uTime;
+
+// Per-vertex attributes
+attribute float aDelay;
 attribute float aAlpha;
-varying float vAlpha;
+attribute float aPhase;   // random 0–2π, drives independent living pulse per segment
+varying  float vAlpha;
+
+float easeInOutCubic(float t) {
+  return t < 0.5
+    ? 4.0 * t * t * t
+    : 1.0 - pow(-2.0 * t + 2.0, 3.0) / 2.0;
+}
 
 void main() {
-  vec2 ndc = (position.xy / uResolution) * 2.0 - 1.0;
+  // Progress per segment (same formula as particle shader)
+  float rawP = clamp((uProgress - aDelay) / (1.0 - aDelay * 0.5), 0.0, 1.0);
+  float ep   = easeInOutCubic(rawP);
+
+  // ── Canopy fade ──────────────────────────────────────────────────────────
+  // aAlpha per segment already encodes trunk→tip gradient.
+  // Shader fade is a soft safety net for the very tips (Y>0.82).
+  float normY      = clamp(position.y, 0.0, 1.0);
+  float canopyFade = 1.0 - smoothstep(0.80, 0.98, normY);
+
+  // ── Living pulse — organic shimmer with always-visible floor ──────────────
+  // Three waves at different rates create organic rhythm.
+  // Floor of 0.35 ensures tree structure is always readable;
+  // only 65% of brightness modulates, so lines never fully vanish.
+  float wave1 = 0.5 + 0.5 * sin(uTime * 2.80 + aPhase);
+  float wave2 = 0.5 + 0.5 * sin(uTime * 0.55 + aPhase * 1.618);
+  float wave3 = 0.5 + 0.5 * sin(uTime * 1.35 + aPhase * 2.414);
+  float pulse = 0.35 + 0.65 * (wave1 * wave2 * wave3);  // 35% floor — structure always visible
+
+  // ── Projection (identical to particle shader) ─────────────────────────────
+  vec3 w = position * uSceneScale;
+
+  float cosY = cos(uRotY); float sinY = sin(uRotY);
+  float rx = w.x * cosY - w.z * sinY;
+  float ry = w.y;
+  float rz = w.x * sinY + w.z * cosY;
+
+  float cosX = cos(uRotX); float sinX = sin(uRotX);
+  float ry_t = ry * cosX - rz * sinX;
+  float rz_t = ry * sinX + rz * cosX;
+
+  float d  = 900.0 / (900.0 + rz_t + 280.0);
+  float tx = rx * d + uResolution.x * 0.50;
+  float ty = -(ry_t * 1.15) * d + uResolution.y * 0.65;
+
+  vec2 ndc = (vec2(tx, ty) / uResolution) * 2.0 - 1.0;
   ndc.y = -ndc.y;
-  vAlpha = aAlpha;
   gl_Position = vec4(ndc, 0.0, 1.0);
+
+  float disintFade = mix(1.0, 0.0, uDisintegration * uDisintegration);
+  vAlpha = ep * aAlpha * disintFade * canopyFade * pulse;
 }
 `;
 
@@ -465,28 +523,38 @@ precision highp float;
 
 uniform float uLineAlpha;
 uniform float uTime;
-uniform vec3 uColor;
+uniform vec3  uColor;
 varying float vAlpha;
 
 void main() {
-  // Subtle shimmer — quieter than before so structural lines don't distract
-  float pulse = 0.92 + 0.08 * sin(uTime * 4.0 + gl_FragCoord.x * 0.03);
-  gl_FragColor = vec4(uColor, uLineAlpha * vAlpha * pulse);
+  if (vAlpha < 0.004) discard;
+  // Additive blending: color is emitted, alpha controls intensity.
+  // Overlapping segments stack up brightness → natural glow at dense areas.
+  float intensity = uLineAlpha * vAlpha;
+  // High-frequency per-pixel flicker — makes lines shimmer like heat/electricity
+  float flicker = 0.80 + 0.20 * sin(uTime * 5.5 + gl_FragCoord.x * 0.031 + gl_FragCoord.y * 0.019);
+  gl_FragColor = vec4(uColor * intensity * flicker, intensity);
 }
 `;
 
 export function createLineMaterial(): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
-    vertexShader: LINE_VERTEX_SHADER,
+    vertexShader:   LINE_VERTEX_SHADER,
     fragmentShader: LINE_FRAGMENT_SHADER,
     uniforms: {
-      uResolution: { value: new THREE.Vector2(1, 1) },
-      uLineAlpha: { value: 0.55 },
-      uTime: { value: 0 },
-      uColor: { value: new THREE.Vector3(1, 1, 1) }, // white by default, tinted on zone hover
+      uProgress:       { value: 0.0 },
+      uRotY:           { value: 0.0 },
+      uRotX:           { value: 0.0 },
+      uSceneScale:     { value: 1.0 },
+      uResolution:     { value: new THREE.Vector2(1, 1) },
+      uLineAlpha:      { value: 0.0 },
+      uTime:           { value: 0.0 },
+      uColor:          { value: new THREE.Vector3(0.90, 0.88, 0.82) }, // warm white default
+      uDisintegration: { value: 0.0 },
     },
     transparent: true,
-    depthTest: false,
-    depthWrite: false,
+    blending:    THREE.AdditiveBlending,  // lines stack → glow at dense trunk
+    depthTest:   false,
+    depthWrite:  false,
   });
 }

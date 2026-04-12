@@ -1,7 +1,7 @@
 // ── Projection ───────────────────────────────────────────────────────────────
 export const FOV = 900;
 export const CAMERA_Z_OFFSET = 280;
-export const SCENE_SCALE_FACTOR = 0.588; // min(W,H) * this — 0.49 * 1.20
+export const SCENE_SCALE_FACTOR = 0.539; // min(W,H) * this — +10% from 0.49
 
 // ── Spring physics (cursor repulsion) ────────────────────────────────────────
 export const REPEL_R = 140;
@@ -13,8 +13,8 @@ export const MAX_DISP = 160;
 export const PROX_R = 100;
 export const LINE_MIN_DIST = 45;  // skip pairs closer than this (prevents triangulation blobs)
 export const LINE_MAX_DIST = 90;  // connect up to this distance
-export const MAX_LINE_ALPHA = 0.85;
-export const MAX_LINES = 700;     // structural trunk→canopy lines
+export const MAX_LINE_ALPHA = 1.50; // Additive blending: high value = intense glow at dense trunk
+export const MAX_LINES = 220;     // sparse clean connections
 export const GRID_CELL = 65;
 
 // ── Matrix rain ──────────────────────────────────────────────────────────────
@@ -35,7 +35,7 @@ export const SCROLL_ROTATE_SPEED = 0.002;
 export const ROT_LERP = 0.045;
 
 // ── Font sizes per darkness zone (px) ────────────────────────────────────────
-export const FONT_SIZES: [number, number, number, number] = [14, 12, 10, 8];
+export const FONT_SIZES: [number, number, number, number] = [7, 6, 5, 4];
 // darkness > 0.75 → 13, > 0.55 → 11, > 0.35 → 9, else → 8
 
 // ── Darkness thresholds ──────────────────────────────────────────────────────

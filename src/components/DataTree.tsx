@@ -16,12 +16,7 @@ import {
   DRAG_TILT_SPEED,
   MAX_TILT_X,
   ROT_LERP,
-  PROX_R,
-  LINE_MIN_DIST,
-  LINE_MAX_DIST,
   MAX_LINE_ALPHA,
-  MAX_LINES,
-  GRID_CELL,
   DIGIT_TRUNK,
   DIGIT_BRANCH,
   DIGIT_MID,
@@ -31,6 +26,13 @@ import {
   COMPANY_PROJECTS,
   CARD_BENTO_LAYOUTS,
 } from "./data-tree/constants";
+import {
+  BRANCH_SEG_COUNT,
+  BRANCH_POSITIONS,
+  BRANCH_DELAYS,
+  BRANCH_ALPHAS,
+  BRANCH_PHASES,
+} from "./data-tree/branch-lines";
 import type { RawPoint, ParticleCPU } from "./data-tree/types";
 import { generateSDFAtlas } from "./data-tree/sdf-atlas";
 
@@ -203,9 +205,9 @@ function computeCardTargets(
           const pi = ci * PARTICLES_PER_CARD + row * CARD_COLS + col;
           const screenX = rect.x + (col + 0.5) * cellW;
           const screenY = rect.y + (row + 0.5) * cellH;
-          // 0.72 / 0.85 — must match vertex shader's screen mapping
-          const worldX = (screenX - W * 0.72) / (SCENE_SCALE * d);
-          const worldY = (H * 0.80 - screenY) / (SCENE_SCALE * d * 1.15);
+          // 0.50 / 0.65 — must match vertex shader's screen mapping
+          const worldX = (screenX - W * 0.50) / (SCENE_SCALE * d);
+          const worldY = (H * 0.65 - screenY) / (SCENE_SCALE * d * 1.15);
           buf[pi * 3]     = worldX;
           buf[pi * 3 + 1] = worldY;
           buf[pi * 3 + 2] = 0;
@@ -409,6 +411,9 @@ export default function DataTree() {
     // so the correct branch handles the transition. They reset in the else block.
     const cs = colorStateRef.current;
     cs.targetStrength = 0;
+    // Reset color target to white so cs.r/g/b lerp back alongside cs.strength.
+    // This keeps text and particles in sync — both fade from zone color → white together.
+    cs.tr = 1; cs.tg = 1; cs.tb = 1;
 
     // Reset ambient text
     setAmbientText(DEFAULT_AMBIENT);
@@ -471,8 +476,8 @@ export default function DataTree() {
       DPR = 1;
     let progress = 0,
       targetProgress = 0;
-    let rotY = Math.PI * 0.75,
-      targetRotY = Math.PI * 0.75;
+    let rotY = Math.PI * 0.85,
+      targetRotY = Math.PI * 0.85;
     let rotX = -0.17,       // ~10° slight downward look — tree silhouette reads as tree
       targetRotX = -0.17;
     let mouseX = -9999,
@@ -516,22 +521,32 @@ export default function DataTree() {
     // Points (added to scene after data load)
     let points: THREE.Points | null = null;
 
-    // Structural lines — trunk-dense, canopy-fading
-    const linePosBuf  = new Float32Array(MAX_LINES * 6); // 2 verts * 3 floats
-    const lineAlphaBuf = new Float32Array(MAX_LINES * 2); // 2 verts * 1 alpha
+    // ── Branch skeleton lines ─────────────────────────────────────────────────
+    // Static 3D geometry from OBJ; vertex shader projects with same math as
+    // particles so lines stay registered to the tree at all rotation angles.
+    // Data loaded at runtime from /public/branch-lines.json (avoids TS compiler OOM).
     const lineGeometry = new THREE.BufferGeometry();
-    const linePosAttr   = new THREE.BufferAttribute(linePosBuf,  3);
-    const lineAlphaAttr = new THREE.BufferAttribute(lineAlphaBuf, 1);
-    linePosAttr.setUsage(THREE.DynamicDrawUsage);
-    lineAlphaAttr.setUsage(THREE.DynamicDrawUsage);
-    lineGeometry.setAttribute("position", linePosAttr);
-    lineGeometry.setAttribute("aAlpha",   lineAlphaAttr);
-    lineGeometry.setDrawRange(0, 0);
+    lineGeometry.setAttribute("position", new THREE.BufferAttribute(BRANCH_POSITIONS, 3));
+    lineGeometry.setAttribute("aDelay",   new THREE.BufferAttribute(BRANCH_DELAYS,    1));
+    lineGeometry.setAttribute("aAlpha",   new THREE.BufferAttribute(BRANCH_ALPHAS,    1));
+    lineGeometry.setAttribute("aPhase",   new THREE.BufferAttribute(BRANCH_PHASES,    1));
+    lineGeometry.setDrawRange(0, 0); // hidden until data loads + tree begins forming
     const lineSegments = new THREE.LineSegments(lineGeometry, lineMat);
     scene.add(lineSegments);
+    let branchSegCount = BRANCH_SEG_COUNT; // 0 from stub; updated by JSON fetch
 
-    // Pre-computed structural connections [iA, iB] — computed once when tree forms
-    let structuralLines: Array<[number, number]> | null = null;
+    fetch("/branch-lines.json")
+      .then(r => r.json())
+      .then((bd: { count: number; positions: number[]; delays: number[]; alphas: number[]; phases: number[] }) => {
+        // Set geometry attributes FIRST, then update count
+        lineGeometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(bd.positions), 3));
+        lineGeometry.setAttribute("aDelay",   new THREE.BufferAttribute(new Float32Array(bd.delays),    1));
+        lineGeometry.setAttribute("aAlpha",   new THREE.BufferAttribute(new Float32Array(bd.alphas),    1));
+        lineGeometry.setAttribute("aPhase",   new THREE.BufferAttribute(new Float32Array(bd.phases),    1));
+        branchSegCount = bd.count; // LAST — activates draw range after buffers are populated
+        console.log(`[DataTree] branch-lines.json loaded: ${branchSegCount} segments`);
+      })
+      .catch(err => console.warn("[DataTree] branch-lines.json load failed:", err));
 
     // ── Resize ───────────────────────────────────────────────────────────────
     function resize() {
@@ -557,9 +572,6 @@ export default function DataTree() {
       particleMat.uniforms.uResolution.value.set(W, H);
       particleMat.uniforms.uDPR.value = physicalDPR;
       lineMat.uniforms.uResolution.value.set(W, H);
-
-      // Reset structural lines so they recompute at new screen dimensions
-      structuralLines = null;
 
       // Redistribute scatter positions & recompute card targets
       if (pb) {
@@ -779,8 +791,8 @@ export default function DataTree() {
         p.depthFactor = clamp((d - 0.5) / 0.6, 0, 1);
 
         const ryFinal = ry_t * 1.15;
-        const tx = rx * d + W * 0.72;
-        const ty = -ryFinal * d + H * 0.80;
+        const tx = rx * d + W * 0.50;
+        const ty = -ryFinal * d + H * 0.65;
 
         // Scatter + brownian
         const scatterX = pb.scatterBuf[i * 2] + pb.brownianBuf[i * 2];
@@ -884,114 +896,48 @@ export default function DataTree() {
       (pb.geometry.getAttribute("aFadeOpacity") as THREE.BufferAttribute).needsUpdate = true;
     }
 
-    // ── Smart proximity lines (1 connection per particle, no clusters) ────────
+    // ── Branch skeleton animation ─────────────────────────────────────────────
+    // Geometry is static (uploaded once). Each frame we only update uniforms
+    // so the vertex shader can compute the current dissolve state + projection.
 
     function updateSmartLines() {
-      if (!pb || progress < 0.85 || cardFormingRef.current || cardDisintegratingRef.current) {
+      if (cardFormingRef.current || cardDisintegratingRef.current) {
+        lineMat.uniforms.uLineAlpha.value = 0;
         lineGeometry.setDrawRange(0, 0);
         return;
       }
 
-      const cpu = pb.cpuParticles;
-      const n   = pb.count;
+      // Same fade-in / fade-out window as the tree formation
+      const fadeIn  = clamp((progress - 0.60) / 0.20, 0, 1);
+      const fadeOut = clamp(1 - (progress - 0.94) / 0.05, 0, 1);
+      const alpha   = MAX_LINE_ALPHA * fadeIn * fadeOut;
 
-      // ── One-time: compute structural connections when tree has fully formed ──
-      if (!structuralLines && progress > 0.87) {
-        // Sample eligible particles — stride down to ~1500 for brute-force O(N²)
-        // With N=1500, 1500² = 2.25M comparisons — fast enough for a one-time calc.
-        const allEl: number[] = [];
-        for (let i = 0; i < n; i++) {
-          const p = cpu[i];
-          if (p.ep < 0.85 || p.depthFactor < 0.15) continue;
-          allEl.push(i);
-        }
-        const stride = Math.max(1, Math.floor(allEl.length / 1500));
-        const sampled = allEl.filter((_, idx) => idx % stride === 0);
-
-        // Y thresholds: trunk = high screenY (near H*0.80), canopy = low screenY
-        const yTrunk  = H * 0.82;
-        const yCanopy = H * 0.30;
-
-        // Distance range for structural connections (screen pixels)
-        // Min=12 allows dense trunk connections; Max=70 spans branch-level distances
-        const CONN_MIN = 12, CONN_MAX = 70;
-        const minD2 = CONN_MIN * CONN_MIN;
-        const maxD2 = CONN_MAX * CONN_MAX;
-
-        const connections: Array<[number, number, number, number]> = [];
-        // Track degree per particle — allow up to 2 connections per particle for denser mesh
-        const degree = new Map<number, number>();
-
-        // Sort by screenY descending so we fill trunk connections first
-        sampled.sort((a, b) => cpu[b].screenY - cpu[a].screenY);
-
-        for (let a = 0; a < sampled.length && connections.length < MAX_LINES; a++) {
-          const iA = sampled[a];
-          if ((degree.get(iA) ?? 0) >= 2) continue;
-          const pA = cpu[iA];
-          const ax = pA.screenX, ay = pA.screenY;
-          const rA = Math.max(0, Math.min(1, (ay - yCanopy) / (yTrunk - yCanopy)));
-          const sA = rA * rA * (3 - 2 * rA); // smoothstep alpha
-          if (sA < 0.02) continue; // skip particles in top canopy zone
-
-          // Brute-force search ALL sampled particles for best partner
-          let bestB = -1, bestD2 = maxD2 + 1;
-          for (let b = 0; b < sampled.length; b++) {
-            if (b === a) continue;
-            const iB = sampled[b];
-            if ((degree.get(iB) ?? 0) >= 2) continue;
-            const pB = cpu[iB];
-            const dx = ax - pB.screenX, dy = ay - pB.screenY;
-            const d2 = dx * dx + dy * dy;
-            if (d2 >= minD2 && d2 < maxD2 && d2 < bestD2) {
-              bestB = iB; bestD2 = d2;
-            }
-          }
-          if (bestB < 0) continue;
-
-          const pB = cpu[bestB];
-          const rB = Math.max(0, Math.min(1, (pB.screenY - yCanopy) / (yTrunk - yCanopy)));
-          const sB = rB * rB * (3 - 2 * rB);
-          connections.push([iA, bestB, sA, sB]);
-          degree.set(iA, (degree.get(iA) ?? 0) + 1);
-          degree.set(bestB, (degree.get(bestB) ?? 0) + 1);
-        }
-
-        // Write per-vertex alpha buffer (static until next resize)
-        for (let i = 0; i < connections.length; i++) {
-          lineAlphaBuf[i * 2]     = connections[i][2];
-          lineAlphaBuf[i * 2 + 1] = connections[i][3];
-        }
-        lineAlphaAttr.needsUpdate = true;
-        structuralLines = connections.map(c => [c[0], c[1]] as [number, number]);
-      }
-
-      const conns = structuralLines;
-      if (!conns || conns.length === 0) {
-        lineGeometry.setDrawRange(0, 0);
-        return;
-      }
-
-      // ── Per-frame: update positions as particles sway with wind/turbulence ──
-      const count = conns.length;
-      for (let i = 0; i < count; i++) {
-        const [iA, iB] = conns[i];
-        const pA = cpu[iA];
-        const pB = cpu[iB];
-        const off = i * 6;
-        linePosBuf[off]     = pA.screenX + pA.dispX;
-        linePosBuf[off + 1] = pA.screenY + pA.dispY;
-        linePosBuf[off + 2] = 0;
-        linePosBuf[off + 3] = pB.screenX + pB.dispX;
-        linePosBuf[off + 4] = pB.screenY + pB.dispY;
-        linePosBuf[off + 5] = 0;
-      }
-      linePosAttr.needsUpdate = true;
-
-      lineGeometry.setDrawRange(0, count * 2);
+      lineMat.uniforms.uLineAlpha.value      = alpha;
+      lineMat.uniforms.uProgress.value       = progress;
+      lineMat.uniforms.uRotY.value           = rotY;
+      lineMat.uniforms.uRotX.value           = rotX;
+      lineMat.uniforms.uSceneScale.value     = Math.min(W, H) * SCENE_SCALE_FACTOR;
       lineMat.uniforms.uResolution.value.set(W, H);
-      const formAlpha = clamp((progress - 0.85) / 0.08, 0, 1);
-      lineMat.uniforms.uLineAlpha.value = MAX_LINE_ALPHA * formAlpha;
+      lineMat.uniforms.uDisintegration.value = particleMatRef.current
+        ? particleMatRef.current.uniforms.uDisintegration.value
+        : 0;
+
+      // ── Match particle tint color ─────────────────────────────────────────
+      // When a zone is active (cs.strength > 0) lines adopt the same brand color.
+      // Otherwise fall back to a warm near-white that complements dark trunk particles.
+      const cs = colorStateRef.current;
+      if (cs.strength > 0.05) {
+        lineMat.uniforms.uColor.value.set(cs.r, cs.g, cs.b);
+      } else {
+        lineMat.uniforms.uColor.value.set(0.85, 0.80, 0.75); // warm neutral default
+      }
+
+      // Show all segments once the tree starts forming
+      if (alpha > 0 || progress > 0.55) {
+        lineGeometry.setDrawRange(0, branchSegCount * 2);
+      } else {
+        lineGeometry.setDrawRange(0, 0);
+      }
     }
 
     // ── Overlay updates ──────────────────────────────────────────────────────
@@ -1088,7 +1034,7 @@ export default function DataTree() {
       const lerpSpeed = COLOR_LERP_SPEED;
 
       // Always-black palette
-      const BASE_BG = '#0A0A0A';
+      const BASE_BG = '#000000';
       const BASE_FG = '#FFFFFF';
 
       // Lerp strength
@@ -1128,14 +1074,9 @@ export default function DataTree() {
       };
 
       if (cs.strength > 0.005) {
-        // ── ZONE HOVERED: particles + lines + UI go brand color, bg stays black ──
+        // ── ZONE HOVERED: particles + UI go brand color, bg stays black ──
         particleMat.uniforms.uTintColor.value.set(cs.r, cs.g, cs.b);
         particleMat.uniforms.uTintStrength.value = cs.strength;
-        // Lerp line color toward brand color
-        const lr = 1 + (cs.r - 1) * cs.strength;
-        const lg = 1 + (cs.g - 1) * cs.strength;
-        const lb = 1 + (cs.b - 1) * cs.strength;
-        lineMat.uniforms.uColor.value.set(lr, lg, lb);
 
         const brandColor = `rgb(${r255},${g255},${b255})`;
         if (nameTextEl) nameTextEl.style.color = brandColor;
@@ -1152,10 +1093,9 @@ export default function DataTree() {
         cs.activeZone = null;
         cs.zoneType = null;
 
-        // White particles at full tint, white lines
+        // White particles at full tint
         particleMat.uniforms.uTintColor.value.set(1, 1, 1);
         particleMat.uniforms.uTintStrength.value = 1;
-        lineMat.uniforms.uColor.value.set(1, 1, 1);
 
         if (nameTextEl) nameTextEl.style.color = BASE_FG;
         if (subtitleEl) subtitleEl.style.color = BASE_FG;
@@ -1165,19 +1105,9 @@ export default function DataTree() {
         applyMinorUI(BASE_FG);
       }
 
-      // ── Background: always black → stays black into work page ──
-      // Home is #0A0A0A. On scroll to work it transitions to pure #000000.
-      const workBgT = clamp((progress - 1.0) / 0.3, 0, 1);
-      const smoothBgT = workBgT * workBgT * (3 - 2 * workBgT); // smoothstep
-      if (progress >= 0.95) {
-        const bgV = Math.round(10 * (1 - smoothBgT));
-        container.style.background = `rgb(${bgV},${bgV},${bgV})`;
-        if (blurRectRef.current) blurRectRef.current.style.background = `rgb(${bgV},${bgV},${bgV})`;
-      } else {
-        // Always black on homepage (brand color never floods the background)
-        container.style.background = BASE_BG;
-        if (blurRectRef.current) blurRectRef.current.style.background = BASE_BG;
-      }
+      // ── Background: always pure black throughout ──
+      container.style.background = '#000000';
+      if (blurRectRef.current) blurRectRef.current.style.background = '#000000';
 
       // WorkPage color sync via CSS variables
       // On work page (black bg), brand color shows on WORK header + pills
@@ -1214,6 +1144,8 @@ export default function DataTree() {
         const cs = colorStateRef.current;
         cs.targetStrength = 0;
         cs.strength = 0;
+        cs.tr = 1; cs.tg = 1; cs.tb = 1;
+        cs.r  = 1; cs.g  = 1; cs.b  = 1;
         cs.activeZone = null;
         cs.zoneType = null;
       }
@@ -1326,7 +1258,11 @@ export default function DataTree() {
         scrollUnlocked = (time - treeFormedAt) >= 5.0;
       }
 
-      if (progress > 0.85 && !cardDisintegratingRef.current) targetRotY += AUTO_ROTATE_SPEED;
+      // Delay auto-rotation 4s after tree forms so the default view angle holds
+      const autoRotateDelay = treeFormedAt !== null ? time - treeFormedAt : 0;
+      if (progress > 0.85 && !cardDisintegratingRef.current && autoRotateDelay > 4.0) {
+        targetRotY += AUTO_ROTATE_SPEED;
+      }
       rotY += (targetRotY - rotY) * ROT_LERP;
       rotX += (targetRotX - rotX) * ROT_LERP;
 
@@ -1737,10 +1673,8 @@ export default function DataTree() {
         }
       }
 
-      // Canvas always renders on a black background — near-opaque at 0.85 on home,
-      // fully opaque once card formation or scroll-to-work kicks in.
-      const clearAlpha = Math.max(cfp, scrollWhiteEased, 0.85);
-      renderer.setClearColor(0x000000, clearAlpha);
+      // Canvas always renders on a pure black background — fully opaque
+      renderer.setClearColor(0x000000, 1.0);
 
       // Smart lines
       updateSmartLines();
@@ -2051,7 +1985,7 @@ export default function DataTree() {
               <div className="subtitle-overlay" style={{
                 fontFamily: 'Inter, "Helvetica Neue", Helvetica, Arial, sans-serif',
                 fontWeight: 400,
-                fontSize: 'clamp(14px, 1.2vw, 22px)',
+                fontSize: 'clamp(9px, 0.72vw, 13px)',
                 letterSpacing: '0em',
                 textTransform: 'uppercase',
                 marginBottom: 'clamp(8px, 1.2vh, 16px)',
@@ -2068,7 +2002,7 @@ export default function DataTree() {
               <div className="home-name-text" style={{
                 fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif',
                 fontWeight: 900,
-                fontSize: 'clamp(63px, 9.75vh, 135px)',
+                fontSize: 'clamp(38px, 5.85vh, 81px)',
                 lineHeight: 0.88,
                 letterSpacing: '-0.05em',
               }}>
