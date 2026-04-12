@@ -4,6 +4,7 @@ import React, { useRef, useEffect, useState } from "react";
 import WorkPage from "./WorkPage";
 import ProjectDetailPage from "./ProjectDetailPage";
 import TextScramble from "./TextScramble";
+import TreeAnnotations from "./TreeAnnotations";
 import * as THREE from "three";
 import {
   FOV,
@@ -291,6 +292,9 @@ export default function DataTree() {
   const homepageRevealedRef = useRef(false);
   const workPageRef = useRef<HTMLDivElement>(null);
 
+  // Shared projection state — annotation reads this every frame to track tree rotation
+  const treeStateRef = useRef({ rotY: 0, rotX: 0, W: 1, H: 1, sceneScale: 1, progress: 0, time: 0 });
+
   /** Zone key currently hovered — drives name scramble on home page */
   const [hoveredZoneKey, setHoveredZoneKey] = useState<string | null>(null);
 
@@ -373,6 +377,9 @@ export default function DataTree() {
     activeZone: null as string | null,
     // Zone type: 'experience' = bg flood, 'skill' = bg stays white
     zoneType: null as 'experience' | 'skill' | null,
+    // Background invert: 0 = black bg / white particles, 1 = white bg / black particles
+    bgInvert: 0,
+    targetBgInvert: 0,
   });
 
   function showWatermark(word: string, colorKey: string) {
@@ -393,6 +400,9 @@ export default function DataTree() {
       cs.targetStrength = 1.0; // always full strength
       cs.activeZone = colorKey;
       cs.zoneType = zone.type;
+      // Companies with light/white brand identity invert the scene
+      const INVERT_COMPANIES = new Set(['DAILYOBJECTS']);
+      cs.targetBgInvert = INVERT_COMPANIES.has(colorKey) ? 1 : 0;
     }
 
     // Update ambient text
@@ -411,6 +421,7 @@ export default function DataTree() {
     // so the correct branch handles the transition. They reset in the else block.
     const cs = colorStateRef.current;
     cs.targetStrength = 0;
+    cs.targetBgInvert = 0;
     // Reset color target to white so cs.r/g/b lerp back alongside cs.strength.
     // This keeps text and particles in sync — both fade from zone color → white together.
     cs.tr = 1; cs.tg = 1; cs.tb = 1;
@@ -425,8 +436,11 @@ export default function DataTree() {
     if (wipeActive || detailVisible) return;
     const zoneColor = ZONE_COLORS[company];
     const hex = zoneColor ? zoneColor.hex : '#111111';
-    setDetailBrandColor(hex);
-    setWipeColor(hex);
+    // Override detail page brand color for companies with inverted identity
+    const DETAIL_COLOR_OVERRIDE: Record<string, string> = { 'DAILYOBJECTS': '#FFFFFF' };
+    const detailHex = DETAIL_COLOR_OVERRIDE[company] ?? hex;
+    setDetailBrandColor(detailHex);
+    setWipeColor(detailHex);
     setWipeKey(k => k + 1);
     setWipeActive(true);
 
@@ -482,10 +496,13 @@ export default function DataTree() {
       targetRotX = -0.17;
     let mouseX = -9999,
       mouseY = -9999;
-    let isDragging = false;
-    let lastDragX = 0,
-      lastDragY = 0;
     let interacted = false;
+    // Velocity-based rotation: track mouse speed, only rotate above threshold
+    let prevMoveX = -9999;
+    let prevMoveY = -9999;
+    let prevMoveTime = 0;
+    let mouseVelX = 0;  // smoothed velocity
+    let mouseVelY = 0;
     let time = 0;
     let dataLoaded = false;
     let rafId = 0;
@@ -699,53 +716,73 @@ export default function DataTree() {
       );
     };
 
-    const onPointerDown = (e: PointerEvent) => {
-      isDragging = true;
-      lastDragX = e.clientX;
-      lastDragY = e.clientY;
-    };
-
     const onPointerMove = (e: PointerEvent) => {
       mouseX = e.clientX;
       mouseY = e.clientY;
 
-      // Gentle mouse-follow tilt — tree leans toward cursor
-      if (progress > 0.85) {
-        const normX = (mouseX / W - 0.5) * 2; // -1 to 1
-        const normY = (mouseY / H - 0.5) * 2; // -1 to 1
-        targetRotY += normX * 0.0003;
-        targetRotX = clamp(targetRotX + normY * -0.0002, -MAX_TILT_X, MAX_TILT_X);
+      if (progress <= 0.85) {
+        prevMoveX = mouseX;
+        prevMoveY = mouseY;
+        prevMoveTime = performance.now();
+        return;
       }
 
-      if (!isDragging) return;
-      markInteracted();
-      const dx = e.clientX - lastDragX;
-      const dy = e.clientY - lastDragY;
-      lastDragX = e.clientX;
-      lastDragY = e.clientY;
-      if (isDragging && progress > 0.85) {
-        targetRotY += dx * DRAG_ROTATE_SPEED;
-        targetRotX = clamp(targetRotX - dy * DRAG_TILT_SPEED, -MAX_TILT_X, MAX_TILT_X);
+      // ── Velocity-thresholded rotation ──
+      // Compute instantaneous mouse speed (px/ms)
+      const now = performance.now();
+      const dt = now - prevMoveTime;
+      if (dt > 0 && prevMoveX > -9000) {
+        const rawVelX = (mouseX - prevMoveX) / dt; // px/ms
+        const rawVelY = (mouseY - prevMoveY) / dt;
+        // Smooth the velocity (exponential moving average)
+        const smooth = 0.3;
+        mouseVelX = mouseVelX * (1 - smooth) + rawVelX * smooth;
+        mouseVelY = mouseVelY * (1 - smooth) + rawVelY * smooth;
+      }
+      prevMoveX = mouseX;
+      prevMoveY = mouseY;
+      prevMoveTime = now;
+
+      // Speed = magnitude in px/ms
+      const speed = Math.sqrt(mouseVelX * mouseVelX + mouseVelY * mouseVelY);
+
+      // Threshold: ignore slow/small movements (< 0.3 px/ms ≈ casual hovering)
+      // Ramp up from 0.3 to 0.8 px/ms for full effect
+      const SPEED_MIN = 0.3;   // below this = no rotation
+      const SPEED_MAX = 0.8;   // above this = full rotation strength
+      const t = clamp((speed - SPEED_MIN) / (SPEED_MAX - SPEED_MIN), 0, 1);
+      // Ease-in curve so it ramps gently
+      const strength = t * t;
+
+      if (strength > 0.01) {
+        markInteracted();
+        // Apply rotation proportional to velocity direction × strength
+        const ROT_SCALE = 0.018;   // strong enough for full 360 on fast swipes
+        const TILT_SCALE = 0.008;
+        targetRotY += mouseVelX * strength * ROT_SCALE;
+        targetRotX = clamp(
+          targetRotX - mouseVelY * strength * TILT_SCALE,
+          -MAX_TILT_X,
+          MAX_TILT_X
+        );
       }
     };
 
-    const onPointerUp = (e: PointerEvent) => {
-      isDragging = false;
-      try { container.releasePointerCapture(e.pointerId); } catch (_) {}
-    };
-    const onPointerLeave = (e: PointerEvent) => {
-      isDragging = false;
+    const onPointerLeave = (_e: PointerEvent) => {
       mouseX = -9999;
       mouseY = -9999;
-      try { container.releasePointerCapture(e.pointerId); } catch (_) {}
+      prevMoveX = -9999;
+      mouseVelX = 0;
+      mouseVelY = 0;
     };
 
-    const onWindowBlur = () => { isDragging = false; };
+    const onWindowBlur = () => {
+      mouseVelX = 0;
+      mouseVelY = 0;
+    };
 
     container.addEventListener("wheel", onWheel, { passive: true });
-    container.addEventListener("pointerdown", onPointerDown);
     container.addEventListener("pointermove", onPointerMove);
-    container.addEventListener("pointerup", onPointerUp);
     container.addEventListener("pointerleave", onPointerLeave);
     window.addEventListener("blur", onWindowBlur);
 
@@ -927,7 +964,15 @@ export default function DataTree() {
       // Otherwise fall back to a warm near-white that complements dark trunk particles.
       const cs = colorStateRef.current;
       if (cs.strength > 0.05) {
-        lineMat.uniforms.uColor.value.set(cs.r, cs.g, cs.b);
+        if (cs.bgInvert > 0.01) {
+          // Light brand: lines go dark
+          const lR = (1 - cs.bgInvert) * cs.r;
+          const lG = (1 - cs.bgInvert) * cs.g;
+          const lB = (1 - cs.bgInvert) * cs.b;
+          lineMat.uniforms.uColor.value.set(lR, lG, lB);
+        } else {
+          lineMat.uniforms.uColor.value.set(cs.r, cs.g, cs.b);
+        }
       } else {
         lineMat.uniforms.uColor.value.set(0.85, 0.80, 0.75); // warm neutral default
       }
@@ -1041,6 +1086,13 @@ export default function DataTree() {
       cs.strength += (cs.targetStrength - cs.strength) * lerpSpeed;
       if (Math.abs(cs.strength) < 0.001) cs.strength = 0;
 
+      // Lerp background invert (0 = dark, 1 = light) — only on home page
+      const effectiveTarget = workVisibleRef.current ? 0 : cs.targetBgInvert;
+      cs.bgInvert += (effectiveTarget - cs.bgInvert) * lerpSpeed;
+      if (Math.abs(cs.bgInvert) < 0.001) cs.bgInvert = 0;
+      if (Math.abs(cs.bgInvert - 1) < 0.001) cs.bgInvert = 1;
+      const inv = cs.bgInvert;
+
       // Lerp color channels
       cs.r += (cs.tr - cs.r) * lerpSpeed;
       cs.g += (cs.tg - cs.g) * lerpSpeed;
@@ -1074,20 +1126,43 @@ export default function DataTree() {
       };
 
       if (cs.strength > 0.005) {
-        // ── ZONE HOVERED: particles + UI go brand color, bg stays black ──
-        particleMat.uniforms.uTintColor.value.set(cs.r, cs.g, cs.b);
-        particleMat.uniforms.uTintStrength.value = cs.strength;
+        // ── ZONE HOVERED ──
+        if (inv > 0.01) {
+          // Light brand (e.g. DAILYOBJECTS #FFF): invert to white bg, black particles/UI
+          const pR = inv * 0 + (1 - inv) * cs.r;
+          const pG = inv * 0 + (1 - inv) * cs.g;
+          const pB = inv * 0 + (1 - inv) * cs.b;
+          particleMat.uniforms.uTintColor.value.set(pR, pG, pB);
+          particleMat.uniforms.uTintStrength.value = cs.strength;
 
-        const brandColor = `rgb(${r255},${g255},${b255})`;
-        if (nameTextEl) nameTextEl.style.color = brandColor;
-        if (subtitleEl) subtitleEl.style.color = brandColor;
-        if (paraTextEl) {
-          paraTextEl.style.color = '#000000';
-          paraTextEl.style.background = brandColor;
+          const uiColor = `rgb(${Math.round(pR * 255)},${Math.round(pG * 255)},${Math.round(pB * 255)})`;
+          const bgHex = Math.round(inv * 255);
+          const fgHex = Math.round((1 - inv) * 255);
+          const uiBg = `rgb(${bgHex},${bgHex},${bgHex})`;
+          const uiFg = `rgb(${fgHex},${fgHex},${fgHex})`;
+
+          if (nameTextEl) nameTextEl.style.color = uiColor;
+          if (subtitleEl) subtitleEl.style.color = uiColor;
+          if (paraTextEl) { paraTextEl.style.color = uiBg; paraTextEl.style.background = uiFg; }
+          if (watermarkRef.current) watermarkRef.current.style.color = `rgba(${fgHex},${fgHex},${fgHex},0.22)`;
+          if (densityPillEl) { densityPillEl.style.background = uiFg; densityPillEl.style.color = uiBg; }
+          applyMinorUI(uiFg);
+        } else {
+          // Dark brand: particles + UI go brand color, bg stays black
+          particleMat.uniforms.uTintColor.value.set(cs.r, cs.g, cs.b);
+          particleMat.uniforms.uTintStrength.value = cs.strength;
+
+          const brandColor = `rgb(${r255},${g255},${b255})`;
+          if (nameTextEl) nameTextEl.style.color = brandColor;
+          if (subtitleEl) subtitleEl.style.color = brandColor;
+          if (paraTextEl) {
+            paraTextEl.style.color = '#000000';
+            paraTextEl.style.background = brandColor;
+          }
+          if (watermarkRef.current) watermarkRef.current.style.color = `rgba(${r255},${g255},${b255},0.22)`;
+          if (densityPillEl) { densityPillEl.style.background = brandColor; densityPillEl.style.color = '#000000'; }
+          applyMinorUI(brandColor);
         }
-        if (watermarkRef.current) watermarkRef.current.style.color = `rgba(${r255},${g255},${b255},0.22)`;
-        if (densityPillEl) { densityPillEl.style.background = brandColor; densityPillEl.style.color = '#000000'; }
-        applyMinorUI(brandColor);
       } else {
         // ── DEFAULT: no zone hovered — white on black ──
         cs.activeZone = null;
@@ -1105,9 +1180,23 @@ export default function DataTree() {
         applyMinorUI(BASE_FG);
       }
 
-      // ── Background: always pure black throughout ──
-      container.style.background = '#000000';
-      if (blurRectRef.current) blurRectRef.current.style.background = '#000000';
+      // ── Blending mode: additive on dark bg, normal on light bg ──
+      const needNormal = inv > 0.5;
+      const targetBlending = needNormal ? THREE.NormalBlending : THREE.AdditiveBlending;
+      if (particleMat.blending !== targetBlending) {
+        particleMat.blending = targetBlending;
+        particleMat.needsUpdate = true;
+      }
+      if (lineMat.blending !== targetBlending) {
+        lineMat.blending = targetBlending;
+        lineMat.needsUpdate = true;
+      }
+
+      // ── Background: lerps between black and white based on bgInvert ──
+      const bgVal = Math.round(cs.bgInvert * 255);
+      const bgColor = `rgb(${bgVal},${bgVal},${bgVal})`;
+      container.style.background = bgColor;
+      if (blurRectRef.current) blurRectRef.current.style.background = bgColor;
 
       // WorkPage color sync via CSS variables
       // On work page (black bg), brand color shows on WORK header + pills
@@ -1115,7 +1204,7 @@ export default function DataTree() {
         const s = cs.strength;
         const el = workPageRef.current;
         if (s > 0.01) {
-          // Brand hover: text + pills use brand color (white fallback for dark brands)
+          // Brand hover: text + pills use brand color (work page always black bg)
           const brandLum = 0.299 * cs.r + 0.587 * cs.g + 0.114 * cs.b;
           const brandIsDark = brandLum < 0.15;
           const wpColor = brandIsDark ? '#ffffff' : `rgb(${r255},${g255},${b255})`;
@@ -1257,6 +1346,10 @@ export default function DataTree() {
       if (treeFormedAt !== null && !scrollUnlocked) {
         scrollUnlocked = (time - treeFormedAt) >= 5.0;
       }
+
+      // Decay mouse velocity each frame — 0.95 gives nice momentum carry on fast swipes
+      mouseVelX *= 0.95;
+      mouseVelY *= 0.95;
 
       // Delay auto-rotation 4s after tree forms so the default view angle holds
       const autoRotateDelay = treeFormedAt !== null ? time - treeFormedAt : 0;
@@ -1673,8 +1766,9 @@ export default function DataTree() {
         }
       }
 
-      // Canvas always renders on a pure black background — fully opaque
-      renderer.setClearColor(0x000000, 1.0);
+      // Canvas bg lerps with bgInvert (black ↔ white)
+      const clearVal = colorStateRef.current.bgInvert;
+      renderer.setClearColor(new THREE.Color(clearVal, clearVal, clearVal), 1.0);
 
       // Smart lines
       updateSmartLines();
@@ -1684,6 +1778,14 @@ export default function DataTree() {
 
       // Overlays
       updateOverlays();
+
+      // Expose projection state for annotation component
+      const ts = treeStateRef.current;
+      ts.rotY = rotY; ts.rotX = rotX;
+      ts.W = W; ts.H = H;
+      ts.sceneScale = Math.min(W, H) * SCENE_SCALE_FACTOR;
+      ts.progress = progress;
+      ts.time = time;
 
       rafId = requestAnimationFrame(frame);
     }
@@ -1695,9 +1797,7 @@ export default function DataTree() {
       cancelAnimationFrame(rafId);
       ro.disconnect();
       container.removeEventListener("wheel", onWheel);
-      container.removeEventListener("pointerdown", onPointerDown);
       container.removeEventListener("pointermove", onPointerMove);
-      container.removeEventListener("pointerup", onPointerUp);
       container.removeEventListener("pointerleave", onPointerLeave);
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('blur', onWindowBlur);
@@ -2200,39 +2300,17 @@ export default function DataTree() {
         }
       `}</style>
 
-      {/* Hidden easter egg hover zones — only active once tree is formed */}
-      <div ref={zonesRef} style={{ opacity: 0, pointerEvents: 'none', transition: 'opacity 0.6s ease' }}>
-        {[
-          // Experience brands
-          { top: '6%',  left: '30%', w: '18%', h: '16%', word: 'DAILYOBJECTS',   colorKey: 'DAILYOBJECTS' },
-          { top: '6%',  left: '50%', w: '20%', h: '16%', word: 'CREPDOGCREW',    colorKey: 'CREPDOGCREW' },
-          { top: '22%', left: '34%', w: '16%', h: '14%', word: 'PROBO',          colorKey: 'PROBO' },
-          { top: '22%', left: '52%', w: '18%', h: '14%', word: 'STABLE MONEY',   colorKey: 'STABLE MONEY' },
-          { top: '36%', left: '38%', w: '14%', h: '12%', word: 'OTHER',          colorKey: 'OTHER' },
-          // Skill items
-          { top: '36%', left: '52%', w: '14%', h: '12%', word: 'MOTION DESIGN',  colorKey: 'MOTION DESIGN' },
-          { top: '48%', left: '36%', w: '14%', h: '11%', word: 'SYSTEMS',        colorKey: 'SYSTEMS' },
-          { top: '48%', left: '50%', w: '14%', h: '11%', word: '3D',             colorKey: '3D' },
-          { top: '59%', left: '40%', w: '12%', h: '10%', word: 'BRAND',          colorKey: 'BRAND' },
-          { top: '59%', left: '52%', w: '12%', h: '10%', word: 'GLITCH',         colorKey: 'GLITCH' },
-        ].map((z, i) => (
-          <div
-            key={i}
-            onMouseEnter={() => { showWatermark(z.word, z.colorKey); setHoveredZoneKey(z.colorKey); }}
-            onMouseLeave={() => { hideWatermark(); setHoveredZoneKey(null); }}
-            style={{
-              position: 'absolute',
-              top: z.top,
-              left: z.left,
-              width: z.w,
-              height: z.h,
-              zIndex: 4,
-              cursor: 'default',
-              background: 'transparent',
-            }}
-          />
-        ))}
-      </div>
+      {/* SUTÉRA-style floating annotations — visible when tree is formed */}
+      <TreeAnnotations
+        visible={homepageRevealed && !workVisible}
+        treeStateRef={treeStateRef}
+        onHoverZone={(key) => { showWatermark(key, key); setHoveredZoneKey(key); }}
+        onLeaveZone={() => { hideWatermark(); setHoveredZoneKey(null); }}
+        onClickZone={(company) => handleCardClick(company)}
+      />
+
+      {/* Old hover zones removed — TreeAnnotations now handles all zone interactions */}
+      <div ref={zonesRef} style={{ display: 'none' }} />
 
       {/* Work page overlay */}
       <WorkPage
